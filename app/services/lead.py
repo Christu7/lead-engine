@@ -84,3 +84,51 @@ async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate]) -> l
     for lead in leads:
         await db.refresh(lead)
     return leads
+
+
+async def get_leads_by_emails(db: AsyncSession, emails: list[str]) -> dict[str, Lead]:
+    """Fetch existing leads by email, returning a dict keyed by lowercase email."""
+    if not emails:
+        return {}
+    result = await db.execute(
+        select(Lead).where(Lead.email.in_([e.lower() for e in emails]))
+    )
+    return {lead.email.lower(): lead for lead in result.scalars().all()}
+
+
+async def bulk_upsert_leads(
+    db: AsyncSession,
+    leads_data: list[LeadCreate],
+    on_duplicate: str = "skip",
+) -> dict[str, int]:
+    """Insert leads with duplicate email handling.
+
+    Returns {"created": N, "updated": N, "skipped": N}.
+    """
+    created = 0
+    updated = 0
+    skipped = 0
+
+    emails = [ld.email.lower() for ld in leads_data]
+    existing = await get_leads_by_emails(db, emails)
+
+    for data in leads_data:
+        existing_lead = existing.get(data.email.lower())
+
+        if existing_lead is None:
+            db.add(Lead(**data.model_dump()))
+            created += 1
+        elif on_duplicate == "update":
+            for key, value in data.model_dump(exclude_unset=True).items():
+                if key == "enrichment_data" and value is not None:
+                    merged = dict(existing_lead.enrichment_data or {})
+                    merged.update(value)
+                    existing_lead.enrichment_data = merged
+                elif value is not None:
+                    setattr(existing_lead, key, value)
+            updated += 1
+        else:
+            skipped += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped}

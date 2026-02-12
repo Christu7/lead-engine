@@ -16,6 +16,7 @@ from app.schemas.lead import (
     LeadUpdate,
 )
 from app.services import lead as lead_service
+from app.services.csv_mapping import detect_format, map_row
 
 router = APIRouter(
     prefix="/leads",
@@ -57,7 +58,11 @@ async def list_leads(
 
 
 @router.post("/bulk", response_model=BulkImportResponse, status_code=201)
-async def bulk_import(file: UploadFile, db: AsyncSession = Depends(get_db)):
+async def bulk_import(
+    file: UploadFile,
+    on_duplicate: str = Query("skip", pattern="^(skip|update)$"),
+    db: AsyncSession = Depends(get_db),
+):
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a .csv")
 
@@ -67,25 +72,31 @@ async def bulk_import(file: UploadFile, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
 
     reader = csv.DictReader(io.StringIO(content))
+    profile = detect_format(reader.fieldnames)
+
     valid_leads: list[LeadCreate] = []
     errors: list[BulkImportRow] = []
+    total_rows = 0
 
     for row_num, row in enumerate(reader, start=1):
-        # Convert empty strings to None for optional fields
-        cleaned = {k: (v if v != "" else None) for k, v in row.items()}
+        total_rows += 1
+        mapped = map_row(row, profile)
         try:
-            lead_data = LeadCreate(**cleaned)
+            lead_data = LeadCreate(**mapped)
             valid_leads.append(lead_data)
         except ValidationError as e:
             row_errors = [err["msg"] for err in e.errors()]
             errors.append(BulkImportRow(row=row_num, errors=row_errors))
 
-    created_leads = []
+    counts = {"created": 0, "updated": 0, "skipped": 0}
     if valid_leads:
-        created_leads = await lead_service.bulk_create_leads(db, valid_leads)
+        counts = await lead_service.bulk_upsert_leads(db, valid_leads, on_duplicate)
 
     return BulkImportResponse(
-        created=len(created_leads),
+        total=total_rows,
+        created=counts["created"],
+        updated=counts["updated"],
+        skipped=counts["skipped"],
         failed=len(errors),
         errors=errors,
     )

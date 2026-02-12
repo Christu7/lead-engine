@@ -57,6 +57,9 @@ class BulkImportRow(BaseModel):
 
 
 class BulkImportResponse(BaseModel):
+    total: int
     created: int
+    updated: int
+    skipped: int
     failed: int
     errors: list[BulkImportRow]
