@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import get_current_active_user
 from app.schemas.lead import (
     BulkImportResponse,
     BulkImportRow,
@@ -16,7 +17,11 @@ from app.schemas.lead import (
 )
 from app.services import lead as lead_service
 
-router = APIRouter(prefix="/leads", tags=["leads"])
+router = APIRouter(
+    prefix="/leads",
+    tags=["leads"],
+    dependencies=[Depends(get_current_active_user)],
+)
 
 
 @router.post("/", response_model=LeadResponse, status_code=201)
