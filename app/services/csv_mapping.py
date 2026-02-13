@@ -30,17 +30,26 @@ def _apollo_name_transform(row: dict[str, str]) -> dict[str, str]:
     return row
 
 
+def _apollo_phone_transform(row: dict[str, str]) -> dict[str, str]:
+    """Pick the first available phone from Apollo's multiple phone columns."""
+    for col in ("work direct phone", "mobile phone", "home phone", "corporate phone", "other phone"):
+        val = row.get(col, "") or ""
+        if val.strip():
+            row["phone"] = val.strip().lstrip("'")
+            break
+    return row
+
+
 APOLLO_PROFILE = CSVFormatProfile(
     name="apollo",
     detect_columns={"first name", "last name", "email"},
     mappings=[
         FieldMapping("email", "email"),
-        FieldMapping("company", "company"),
+        FieldMapping("company name", "company"),
         FieldMapping("title", "title"),
-        FieldMapping("phone", "phone"),
     ],
     enrichment_fields={
-        "linkedin url": "linkedin_url",
+        "person linkedin url": "linkedin_url",
         "website": "website",
         "city": "city",
         "state": "state",
@@ -48,7 +57,7 @@ APOLLO_PROFILE = CSVFormatProfile(
         "industry": "industry",
         "# employees": "employee_count",
     },
-    composite_transforms=[_apollo_name_transform],
+    composite_transforms=[_apollo_name_transform, _apollo_phone_transform],
     source_value="apollo",
 )
 
@@ -92,9 +101,10 @@ def map_row(row: dict[str, str], profile: CSVFormatProfile | None) -> dict:
         val = normalized.get(mapping.csv_column)
         result[mapping.lead_field] = val if val != "" else None
 
-    # Copy composite-produced fields (e.g. "name")
-    if "name" in normalized and "name" not in result:
-        result["name"] = normalized["name"] if normalized["name"] != "" else None
+    # Copy composite-produced fields (e.g. "name", "phone")
+    for field in ("name", "phone"):
+        if field in normalized and field not in result:
+            result[field] = normalized[field] if normalized[field] != "" else None
 
     # Build enrichment_data from enrichment fields
     enrichment: dict[str, str] = {}
