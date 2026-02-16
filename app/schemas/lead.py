@@ -31,6 +31,7 @@ class LeadResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     id: int
+    client_id: int
     name: str
     email: str
     phone: str | None

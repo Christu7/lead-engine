@@ -11,6 +11,7 @@ class Lead(Base):
     __tablename__ = "leads"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(50))
@@ -34,6 +35,7 @@ class Lead(Base):
         Index("ix_leads_email", "email"),
         Index("ix_leads_source", "source"),
         Index("ix_leads_status", "status"),
+        Index("ix_leads_client_id", "client_id"),
     )
 
 
@@ -41,6 +43,7 @@ class EnrichmentLog(Base):
     __tablename__ = "enrichment_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
     provider: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_response: Mapped[dict | None] = mapped_column(JSONB)
@@ -56,6 +59,7 @@ class RoutingLog(Base):
     __tablename__ = "routing_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), nullable=False)
     destination: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict | None] = mapped_column(JSONB)

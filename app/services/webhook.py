@@ -78,12 +78,13 @@ def parse_website_payload(payload: WebsiteWebhookPayload) -> LeadCreate:
     )
 
 
-async def run_enrichment_background(lead_id: int) -> None:
+async def run_enrichment_background(lead_id: int, client_id: int) -> None:
     """Background task: create a placeholder EnrichmentLog entry for future processing."""
     try:
         async with async_session() as db:
             entry = EnrichmentLog(
                 lead_id=lead_id,
+                client_id=client_id,
                 provider="pending",
                 success=False,
             )

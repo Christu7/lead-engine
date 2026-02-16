@@ -7,21 +7,25 @@ from app.schemas.lead import LeadCreate, LeadUpdate
 SORTABLE_COLUMNS = {"id", "name", "email", "company", "source", "status", "score", "created_at", "updated_at"}
 
 
-async def create_lead(db: AsyncSession, data: LeadCreate) -> Lead:
-    lead = Lead(**data.model_dump())
+async def create_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> Lead:
+    lead = Lead(**data.model_dump(), client_id=client_id)
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
     return lead
 
 
-async def get_lead(db: AsyncSession, lead_id: int) -> Lead | None:
-    return await db.get(Lead, lead_id)
+async def get_lead(db: AsyncSession, lead_id: int, client_id: int) -> Lead | None:
+    result = await db.execute(
+        select(Lead).where(Lead.id == lead_id, Lead.client_id == client_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def list_leads(
     db: AsyncSession,
     *,
+    client_id: int,
     limit: int = 20,
     offset: int = 0,
     source: str | None = None,
@@ -31,7 +35,7 @@ async def list_leads(
     sort_by: str = "created_at",
     sort_order: str = "desc",
 ) -> tuple[list[Lead], int]:
-    query = select(Lead)
+    query = select(Lead).where(Lead.client_id == client_id)
 
     if source is not None:
         query = query.where(Lead.source == source)
@@ -57,8 +61,8 @@ async def list_leads(
     return list(result.scalars().all()), total
 
 
-async def update_lead(db: AsyncSession, lead_id: int, data: LeadUpdate) -> Lead | None:
-    lead = await db.get(Lead, lead_id)
+async def update_lead(db: AsyncSession, lead_id: int, data: LeadUpdate, client_id: int) -> Lead | None:
+    lead = await get_lead(db, lead_id, client_id)
     if lead is None:
         return None
     for key, value in data.model_dump(exclude_unset=True).items():
@@ -68,8 +72,8 @@ async def update_lead(db: AsyncSession, lead_id: int, data: LeadUpdate) -> Lead 
     return lead
 
 
-async def delete_lead(db: AsyncSession, lead_id: int) -> bool:
-    lead = await db.get(Lead, lead_id)
+async def delete_lead(db: AsyncSession, lead_id: int, client_id: int) -> bool:
+    lead = await get_lead(db, lead_id, client_id)
     if lead is None:
         return False
     await db.delete(lead)
@@ -77,8 +81,8 @@ async def delete_lead(db: AsyncSession, lead_id: int) -> bool:
     return True
 
 
-async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate]) -> list[Lead]:
-    leads = [Lead(**data.model_dump()) for data in leads_data]
+async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate], client_id: int) -> list[Lead]:
+    leads = [Lead(**data.model_dump(), client_id=client_id) for data in leads_data]
     db.add_all(leads)
     await db.commit()
     for lead in leads:
@@ -86,12 +90,15 @@ async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate]) -> l
     return leads
 
 
-async def get_leads_by_emails(db: AsyncSession, emails: list[str]) -> dict[str, Lead]:
+async def get_leads_by_emails(db: AsyncSession, emails: list[str], client_id: int) -> dict[str, Lead]:
     """Fetch existing leads by email, returning a dict keyed by lowercase email."""
     if not emails:
         return {}
     result = await db.execute(
-        select(Lead).where(Lead.email.in_([e.lower() for e in emails]))
+        select(Lead).where(
+            Lead.email.in_([e.lower() for e in emails]),
+            Lead.client_id == client_id,
+        )
     )
     return {lead.email.lower(): lead for lead in result.scalars().all()}
 
@@ -99,6 +106,7 @@ async def get_leads_by_emails(db: AsyncSession, emails: list[str]) -> dict[str, 
 async def bulk_upsert_leads(
     db: AsyncSession,
     leads_data: list[LeadCreate],
+    client_id: int,
     on_duplicate: str = "skip",
 ) -> dict[str, int]:
     """Insert leads with duplicate email handling.
@@ -110,13 +118,13 @@ async def bulk_upsert_leads(
     skipped = 0
 
     emails = [ld.email.lower() for ld in leads_data]
-    existing = await get_leads_by_emails(db, emails)
+    existing = await get_leads_by_emails(db, emails, client_id)
 
     for data in leads_data:
         existing_lead = existing.get(data.email.lower())
 
         if existing_lead is None:
-            db.add(Lead(**data.model_dump()))
+            db.add(Lead(**data.model_dump(), client_id=client_id))
             created += 1
         elif on_duplicate == "update":
             for key, value in data.model_dump(exclude_unset=True).items():

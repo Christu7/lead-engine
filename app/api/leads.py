@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_current_active_user
+from app.core.deps import get_client_id, get_current_active_user
 from app.schemas.lead import (
     BulkImportResponse,
     BulkImportRow,
@@ -26,13 +26,18 @@ router = APIRouter(
 
 
 @router.post("/", response_model=LeadResponse, status_code=201)
-async def create_lead(data: LeadCreate, db: AsyncSession = Depends(get_db)):
-    lead = await lead_service.create_lead(db, data)
+async def create_lead(
+    data: LeadCreate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.create_lead(db, data, client_id)
     return lead
 
 
 @router.get("/", response_model=LeadListResponse)
 async def list_leads(
+    client_id: int = Depends(get_client_id),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     source: str | None = None,
@@ -45,6 +50,7 @@ async def list_leads(
 ):
     items, total = await lead_service.list_leads(
         db,
+        client_id=client_id,
         limit=limit,
         offset=offset,
         source=source,
@@ -60,6 +66,7 @@ async def list_leads(
 @router.post("/bulk", response_model=BulkImportResponse, status_code=201)
 async def bulk_import(
     file: UploadFile,
+    client_id: int = Depends(get_client_id),
     on_duplicate: str = Query("skip", pattern="^(skip|update)$"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -90,7 +97,7 @@ async def bulk_import(
 
     counts = {"created": 0, "updated": 0, "skipped": 0}
     if valid_leads:
-        counts = await lead_service.bulk_upsert_leads(db, valid_leads, on_duplicate)
+        counts = await lead_service.bulk_upsert_leads(db, valid_leads, client_id, on_duplicate)
 
     return BulkImportResponse(
         total=total_rows,
@@ -103,23 +110,36 @@ async def bulk_import(
 
 
 @router.get("/{lead_id}", response_model=LeadResponse)
-async def get_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
-    lead = await lead_service.get_lead(db, lead_id)
+async def get_lead(
+    lead_id: int,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.get_lead(db, lead_id, client_id)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
 
 
 @router.patch("/{lead_id}", response_model=LeadResponse)
-async def update_lead(lead_id: int, data: LeadUpdate, db: AsyncSession = Depends(get_db)):
-    lead = await lead_service.update_lead(db, lead_id, data)
+async def update_lead(
+    lead_id: int,
+    data: LeadUpdate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.update_lead(db, lead_id, data, client_id)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
 
 
 @router.delete("/{lead_id}", status_code=204)
-async def delete_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
-    deleted = await lead_service.delete_lead(db, lead_id)
+async def delete_lead(
+    lead_id: int,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    deleted = await lead_service.delete_lead(db, lead_id, client_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Lead not found")

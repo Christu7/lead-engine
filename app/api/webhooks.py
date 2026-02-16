@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_api_key_auth
+from app.core.deps import get_api_key_auth, get_client_id
 from app.schemas.lead import LeadCreate, LeadResponse
 from app.schemas.webhook import TypeformWebhookPayload, WebsiteWebhookPayload
 from app.services import lead as lead_service
@@ -16,8 +16,12 @@ router = APIRouter(
 
 
 @router.post("/leads", response_model=LeadResponse, status_code=201)
-async def create_lead_webhook(data: LeadCreate, db: AsyncSession = Depends(get_db)):
-    lead = await lead_service.create_lead(db, data)
+async def create_lead_webhook(
+    data: LeadCreate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.create_lead(db, data, client_id)
     return lead
 
 
@@ -25,6 +29,7 @@ async def create_lead_webhook(data: LeadCreate, db: AsyncSession = Depends(get_d
 async def typeform_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
 ):
     raw_payload = await request.json()
@@ -37,9 +42,9 @@ async def typeform_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
-    lead = await lead_service.create_lead(db, lead_data)
+    lead = await lead_service.create_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
-    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id)
+    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id, client_id)
     return lead
 
 
@@ -47,6 +52,7 @@ async def typeform_webhook(
 async def website_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
 ):
     raw_payload = await request.json()
@@ -59,7 +65,7 @@ async def website_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
-    lead = await lead_service.create_lead(db, lead_data)
+    lead = await lead_service.create_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
-    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id)
+    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id, client_id)
     return lead
