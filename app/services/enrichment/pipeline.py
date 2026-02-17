@@ -7,6 +7,7 @@ from app.models.lead import EnrichmentLog, Lead
 from app.services.enrichment import rate_limiter
 from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
 from app.services.enrichment.cache import get_cached, set_cached
+from app.services.scoring import score_lead
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class EnrichmentPipeline:
                     logger.warning("Enrichment: %s failed for lead %d: %s", name, lead_id, result.error)
 
             lead.enrichment_status = "enriched"
+            await score_lead(db, lead, client_id)
         except Exception:
             lead.enrichment_status = "failed"
             raise

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr
 
 
 class LeadCreate(BaseModel):
@@ -11,7 +11,7 @@ class LeadCreate(BaseModel):
     title: str | None = None
     source: str | None = None
     status: str = "new"
-    score: int | None = Field(default=None, ge=0, le=100)
+    score: int | None = None
     enrichment_data: dict | None = None
     enrichment_status: str = "pending"
 
@@ -24,7 +24,7 @@ class LeadUpdate(BaseModel):
     title: str | None = None
     source: str | None = None
     status: str | None = None
-    score: int | None = Field(default=None, ge=0, le=100)
+    score: int | None = None
     enrichment_data: dict | None = None
 
 
@@ -43,6 +43,7 @@ class LeadResponse(BaseModel):
     score: int | None
     enrichment_data: dict | None
     enrichment_status: str
+    score_details: dict | None
     created_at: datetime
     updated_at: datetime
 

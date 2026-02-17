@@ -22,6 +22,7 @@ class Lead(Base):
     score: Mapped[int | None] = mapped_column(Integer)
     enrichment_data: Mapped[dict | None] = mapped_column(JSONB)
     enrichment_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    score_details: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
