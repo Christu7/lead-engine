@@ -17,7 +17,9 @@ from app.schemas.lead import (
 )
 from app.services import lead as lead_service
 from app.services.csv_mapping import detect_format, map_row
+from app.schemas.routing import RoutingResult
 from app.services.enrichment.queue import enqueue_enrichment
+from app.services.routing import route_lead
 from app.services.scoring import score_lead
 
 router = APIRouter(
@@ -166,6 +168,20 @@ async def rescore_lead(
     await db.commit()
     await db.refresh(lead)
     return lead
+
+
+@router.post("/{lead_id}/route", response_model=RoutingResult)
+async def route_lead_endpoint(
+    lead_id: int,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.get_lead(db, lead_id, client_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    result = await route_lead(db, lead, client_id)
+    await db.commit()
+    return result
 
 
 @router.delete("/{lead_id}", status_code=204)
