@@ -55,6 +55,33 @@ class LeadListResponse(BaseModel):
     offset: int
 
 
+class EnrichmentLogResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    provider: str
+    raw_response: dict | None
+    success: bool
+    created_at: datetime
+
+
+class RoutingLogResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    destination: str
+    payload: dict | None
+    response_code: int | None
+    success: bool
+    error: str | None
+    created_at: datetime
+
+
+class LeadDetailResponse(LeadResponse):
+    enrichment_logs: list[EnrichmentLogResponse]
+    routing_logs: list[RoutingLogResponse]
+
+
 class BulkImportRow(BaseModel):
     row: int
     errors: list[str]

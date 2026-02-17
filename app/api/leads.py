@@ -1,5 +1,6 @@
 import csv
 import io
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from app.schemas.lead import (
     BulkImportResponse,
     BulkImportRow,
     LeadCreate,
+    LeadDetailResponse,
     LeadListResponse,
     LeadResponse,
     LeadUpdate,
@@ -48,6 +50,9 @@ async def list_leads(
     status: str | None = None,
     score_min: int | None = Query(None, ge=0, le=100),
     score_max: int | None = Query(None, ge=0, le=100),
+    search: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     sort_by: str = "created_at",
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
@@ -61,6 +66,9 @@ async def list_leads(
         status=status,
         score_min=score_min,
         score_max=score_max,
+        search=search,
+        created_after=created_after,
+        created_before=created_before,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -111,6 +119,18 @@ async def bulk_import(
         failed=len(errors),
         errors=errors,
     )
+
+
+@router.get("/{lead_id}/detail", response_model=LeadDetailResponse)
+async def get_lead_detail(
+    lead_id: int,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.get_lead_with_logs(db, lead_id, client_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
 
 
 @router.get("/{lead_id}", response_model=LeadResponse)

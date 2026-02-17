@@ -1,5 +1,8 @@
-from sqlalchemy import func, select
+from datetime import datetime
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.lead import Lead
 from app.schemas.lead import LeadCreate, LeadUpdate
@@ -34,6 +37,9 @@ async def list_leads(
     status: str | None = None,
     score_min: int | None = None,
     score_max: int | None = None,
+    search: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
 ) -> tuple[list[Lead], int]:
@@ -47,6 +53,19 @@ async def list_leads(
         query = query.where(Lead.score >= score_min)
     if score_max is not None:
         query = query.where(Lead.score <= score_max)
+    if search is not None:
+        pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Lead.name.ilike(pattern),
+                Lead.email.ilike(pattern),
+                Lead.company.ilike(pattern),
+            )
+        )
+    if created_after is not None:
+        query = query.where(Lead.created_at >= created_after)
+    if created_before is not None:
+        query = query.where(Lead.created_at <= created_before)
 
     # Count total before pagination
     count_query = select(func.count()).select_from(query.subquery())
@@ -90,6 +109,15 @@ async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate], clie
     for lead in leads:
         await db.refresh(lead)
     return leads
+
+
+async def get_lead_with_logs(db: AsyncSession, lead_id: int, client_id: int) -> Lead | None:
+    result = await db.execute(
+        select(Lead)
+        .where(Lead.id == lead_id, Lead.client_id == client_id)
+        .options(selectinload(Lead.enrichment_logs), selectinload(Lead.routing_logs))
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_leads_by_emails(db: AsyncSession, emails: list[str], client_id: int) -> dict[str, Lead]:
