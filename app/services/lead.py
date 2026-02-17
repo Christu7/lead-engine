@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.lead import Lead
 from app.schemas.lead import LeadCreate, LeadUpdate
+from app.services.enrichment.queue import enqueue_enrichment
 
 SORTABLE_COLUMNS = {"id", "name", "email", "company", "source", "status", "score", "created_at", "updated_at"}
 
@@ -12,6 +13,7 @@ async def create_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> Lea
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
+    await enqueue_enrichment(lead.id, client_id)
     return lead
 
 
@@ -116,6 +118,7 @@ async def bulk_upsert_leads(
     created = 0
     updated = 0
     skipped = 0
+    new_leads: list[Lead] = []
 
     emails = [ld.email.lower() for ld in leads_data]
     existing = await get_leads_by_emails(db, emails, client_id)
@@ -124,7 +127,9 @@ async def bulk_upsert_leads(
         existing_lead = existing.get(data.email.lower())
 
         if existing_lead is None:
-            db.add(Lead(**data.model_dump(), client_id=client_id))
+            lead = Lead(**data.model_dump(), client_id=client_id)
+            db.add(lead)
+            new_leads.append(lead)
             created += 1
         elif on_duplicate == "update":
             for key, value in data.model_dump(exclude_unset=True).items():
@@ -139,4 +144,8 @@ async def bulk_upsert_leads(
             skipped += 1
 
     await db.commit()
+
+    for lead in new_leads:
+        await enqueue_enrichment(lead.id, client_id)
+
     return {"created": created, "updated": updated, "skipped": skipped}

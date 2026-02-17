@@ -13,6 +13,7 @@ class LeadCreate(BaseModel):
     status: str = "new"
     score: int | None = Field(default=None, ge=0, le=100)
     enrichment_data: dict | None = None
+    enrichment_status: str = "pending"
 
 
 class LeadUpdate(BaseModel):
@@ -41,6 +42,7 @@ class LeadResponse(BaseModel):
     status: str
     score: int | None
     enrichment_data: dict | None
+    enrichment_status: str
     created_at: datetime
     updated_at: datetime
 

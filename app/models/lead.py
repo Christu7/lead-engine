@@ -21,6 +21,7 @@ class Lead(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="new")
     score: Mapped[int | None] = mapped_column(Integer)
     enrichment_data: Mapped[dict | None] = mapped_column(JSONB)
+    enrichment_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -36,6 +37,7 @@ class Lead(Base):
         Index("ix_leads_source", "source"),
         Index("ix_leads_status", "status"),
         Index("ix_leads_client_id", "client_id"),
+        Index("ix_leads_enrichment_status", "enrichment_status"),
     )
 
 

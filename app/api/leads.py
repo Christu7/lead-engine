@@ -17,6 +17,7 @@ from app.schemas.lead import (
 )
 from app.services import lead as lead_service
 from app.services.csv_mapping import detect_format, map_row
+from app.services.enrichment.queue import enqueue_enrichment
 
 router = APIRouter(
     prefix="/leads",
@@ -131,6 +132,23 @@ async def update_lead(
     lead = await lead_service.update_lead(db, lead_id, data, client_id)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+@router.post("/{lead_id}/enrich", response_model=LeadResponse)
+async def enrich_lead(
+    lead_id: int,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    lead = await lead_service.get_lead(db, lead_id, client_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    lead.enrichment_data = None
+    lead.enrichment_status = "pending"
+    await db.commit()
+    await db.refresh(lead)
+    await enqueue_enrichment(lead.id, client_id)
     return lead
 
 
