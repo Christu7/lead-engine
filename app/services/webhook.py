@@ -3,12 +3,14 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session
-from app.models.lead import EnrichmentLog
 from app.models.webhook_log import WebhookLog
 from app.schemas.lead import LeadCreate
 from app.schemas.webhook import TypeformWebhookPayload, WebsiteWebhookPayload
+from app.services.enrichment import DEFAULT_PROVIDERS, EnrichmentPipeline
 
 logger = logging.getLogger(__name__)
+
+_pipeline = EnrichmentPipeline(DEFAULT_PROVIDERS)
 
 # Typeform field ref → LeadCreate field mapping
 TYPEFORM_REF_MAP = {
@@ -79,16 +81,9 @@ def parse_website_payload(payload: WebsiteWebhookPayload) -> LeadCreate:
 
 
 async def run_enrichment_background(lead_id: int, client_id: int) -> None:
-    """Background task: create a placeholder EnrichmentLog entry for future processing."""
+    """Background task: run enrichment pipeline against configured providers."""
     try:
         async with async_session() as db:
-            entry = EnrichmentLog(
-                lead_id=lead_id,
-                client_id=client_id,
-                provider="pending",
-                success=False,
-            )
-            db.add(entry)
-            await db.commit()
+            await _pipeline.run(db, lead_id, client_id)
     except Exception:
         logger.exception("Background enrichment failed for lead %d", lead_id)
