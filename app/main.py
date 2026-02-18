@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.config import settings
 from app.api.auth import router as auth_router
 from app.api.clients import router as clients_router
+from app.api.dashboard import router as dashboard_router
 from app.api.health import router as health_router
 from app.api.leads import router as leads_router
 from app.api.routing import router as routing_router
@@ -14,7 +16,7 @@ app = FastAPI(title="LeadEngine", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,6 +24,7 @@ app.add_middleware(
 
 app.include_router(health_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(leads_router, prefix="/api")
 app.include_router(routing_router, prefix="/api")
