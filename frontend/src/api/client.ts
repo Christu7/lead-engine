@@ -7,6 +7,7 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
+  headers.set("X-Client-ID", "1");
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
 

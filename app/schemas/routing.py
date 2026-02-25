@@ -35,3 +35,15 @@ class RoutingStatsResponse(BaseModel):
     failed: int
     success_rate: float
     by_destination: list[DestinationStats]
+
+
+class EnrichmentSettingsUpdate(BaseModel):
+    apollo_api_key: str | None = None
+    clearbit_api_key: str | None = None
+    proxycurl_api_key: str | None = None
+
+
+class EnrichmentSettingsResponse(BaseModel):
+    apollo_api_key: str | None = None
+    clearbit_api_key: str | None = None
+    proxycurl_api_key: str | None = None
