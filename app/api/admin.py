@@ -1,14 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+import json
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_admin
+from app.core.redis import redis as redis_client
 from app.core.security import hash_password
-from app.models.lead import Lead, RoutingLog
 from app.models.user import User, UserClient
 from app.schemas.admin import AdminCreateUser, AdminUserResponse, AssignClientRequest
+from app.services.ai_enrichment import run_analysis_for_lead
 from app.services.auth import get_user_by_email
+from app.services.dead_letter import DeadLetterService, DeadLetterType
+from app.services.enrichment.queue import QUEUE_KEY
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -72,53 +77,75 @@ async def unassign_client(user_id: int, client_id: int, db: AsyncSession = Depen
 
 
 @router.get("/dead-letters", dependencies=[Depends(require_admin)])
-async def list_dead_letters(db: AsyncSession = Depends(get_db)):
-    """
-    List leads stuck in a failed state — either enrichment failed or
-    at least one routing attempt failed (while enrichment succeeded).
-    """
-    # Leads where enrichment itself failed
-    failed_enrichment = list(
-        (
-            await db.execute(
-                select(Lead)
-                .where(Lead.enrichment_status == "failed")
-                .order_by(Lead.updated_at.desc())
-                .limit(200)
-            )
-        ).scalars().all()
-    )
+async def list_dead_letters():
+    """List all entries currently in the dead letter queue, newest first."""
+    svc = DeadLetterService(redis_client)
+    entries = await svc.list()
+    return {"count": len(entries), "dead_letters": entries}
 
-    # Leads where enrichment succeeded but routing failed (at least once)
-    failed_routing = list(
-        (
-            await db.execute(
-                select(Lead)
-                .join(RoutingLog, Lead.id == RoutingLog.lead_id)
-                .where(Lead.enrichment_status == "enriched", RoutingLog.success.is_(False))
-                .group_by(Lead.id)
-                .order_by(Lead.updated_at.desc())
-                .limit(200)
-            )
-        ).scalars().all()
-    )
 
-    seen: set[int] = set()
-    dead_letters = []
-    for lead in failed_enrichment + failed_routing:
-        if lead.id in seen:
-            continue
-        seen.add(lead.id)
-        dead_letters.append(
-            {
-                "id": lead.id,
-                "client_id": lead.client_id,
-                "email": lead.email,
-                "name": lead.name,
-                "enrichment_status": lead.enrichment_status,
-                "created_at": lead.created_at.isoformat(),
-                "updated_at": lead.updated_at.isoformat(),
-            }
+@router.post("/dead-letters/{entry_id}/retry", dependencies=[Depends(require_admin)])
+async def retry_dead_letter(
+    entry_id: str,
+    background_tasks: BackgroundTasks,
+):
+    """Re-queue a dead letter entry for reprocessing, then dismiss it."""
+    svc = DeadLetterService(redis_client)
+    entry = await svc.get(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Dead letter entry not found")
+
+    dl_type = entry.get("type")
+    lead_id = entry["lead_id"]
+    client_id = entry["client_id"]
+
+    if dl_type == DeadLetterType.ENRICHMENT:
+        payload = json.dumps({"lead_id": lead_id, "client_id": client_id})
+        await redis_client.lpush(QUEUE_KEY, payload)
+    elif dl_type == DeadLetterType.AI_ANALYSIS:
+        background_tasks.add_task(run_analysis_for_lead, lead_id, client_id)
+    elif dl_type == DeadLetterType.ROUTING:
+        background_tasks.add_task(_retry_routing_background, lead_id, client_id)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported dead letter type: {dl_type}")
+
+    await svc.dismiss(entry_id)
+    return {"retried": entry_id, "type": dl_type, "lead_id": lead_id}
+
+
+@router.delete("/dead-letters/{entry_id}", status_code=204, dependencies=[Depends(require_admin)])
+async def dismiss_dead_letter(entry_id: str):
+    """Remove a dead letter entry without retrying."""
+    svc = DeadLetterService(redis_client)
+    found = await svc.dismiss(entry_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Dead letter entry not found")
+
+
+async def _retry_routing_background(lead_id: int, client_id: int) -> None:
+    """Background task: re-run routing for a single lead."""
+    import logging
+
+    from app.core.database import async_session
+    from app.models.lead import Lead
+    from app.services.routing import route_lead
+
+    _logger = logging.getLogger(__name__)
+    try:
+        async with async_session() as db:
+            lead = await db.get(Lead, lead_id)
+            if lead is None or lead.client_id != client_id:
+                _logger.error(
+                    "Routing retry: lead %d not found or client mismatch",
+                    lead_id,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
+                return
+            await route_lead(db, lead, client_id)
+            await db.commit()
+    except Exception:
+        _logger.exception(
+            "Routing retry failed for lead %d",
+            lead_id,
+            extra={"lead_id": lead_id, "client_id": client_id},
         )
-
-    return {"count": len(dead_letters), "dead_letters": dead_letters}

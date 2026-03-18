@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     SENTRY_DSN: str = ""
     ANTHROPIC_API_KEY: str = ""
+    DEBUG: bool = False
+    TEST_DATABASE_URL: str = ""
 
     model_config = {"env_file": ".env"}
 

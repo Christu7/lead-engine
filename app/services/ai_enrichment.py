@@ -6,10 +6,9 @@ from datetime import datetime, timezone
 import anthropic
 
 from app.core.config import settings
+from app.core.exceptions import AIConfigurationError, AIEnrichmentError
 
 logger = logging.getLogger(__name__)
-
-AI_DL_QUEUE_KEY = "ai_analysis_dead_letters"
 
 SYSTEM_PROMPT = """\
 You are an expert B2B sales researcher. Analyze the provided lead data and respond with \
@@ -26,19 +25,6 @@ specific to this person's role and company — not generic.
 - "email_angle": (string) One paragraph on the best cold email angle based on their \
 role and company context.
 """
-
-
-class AIEnrichmentError(Exception):
-    """Raised when the Anthropic API call or response parsing fails."""
-
-    def __init__(self, message: str, lead_id: int, cause: Exception | None = None) -> None:
-        super().__init__(message)
-        self.lead_id = lead_id
-        self.cause = cause
-
-
-class ConfigurationError(Exception):
-    """Raised when ANTHROPIC_API_KEY is not set."""
 
 
 class AIEnrichmentService:
@@ -103,20 +89,20 @@ class AIEnrichmentService:
             )
         except anthropic.APIConnectionError as exc:
             raise AIEnrichmentError(
-                f"Anthropic connection failed: {exc}",
                 lead_id=lead.id,
+                reason=f"Anthropic connection failed: {exc}",
                 cause=exc,
             ) from exc
         except anthropic.RateLimitError as exc:
             raise AIEnrichmentError(
-                "Anthropic rate limit exceeded",
                 lead_id=lead.id,
+                reason="Anthropic rate limit exceeded",
                 cause=exc,
             ) from exc
         except anthropic.APIStatusError as exc:
             raise AIEnrichmentError(
-                f"Anthropic API error (HTTP {exc.status_code}): {exc.message}",
                 lead_id=lead.id,
+                reason=f"Anthropic API error (HTTP {exc.status_code}): {exc.message}",
                 cause=exc,
             ) from exc
 
@@ -126,8 +112,8 @@ class AIEnrichmentService:
             result = json.loads(raw_text)
         except json.JSONDecodeError as exc:
             raise AIEnrichmentError(
-                f"Could not parse Anthropic response as JSON. Got: {raw_text[:300]}",
                 lead_id=lead.id,
+                reason=f"Could not parse Anthropic response as JSON. Got: {raw_text[:300]}",
                 cause=exc,
             ) from exc
 
@@ -135,8 +121,8 @@ class AIEnrichmentService:
         missing = required_keys - set(result.keys())
         if missing:
             raise AIEnrichmentError(
-                f"Anthropic response missing required keys: {sorted(missing)}",
                 lead_id=lead.id,
+                reason=f"Anthropic response missing required keys: {sorted(missing)}",
             )
 
         return result
@@ -145,12 +131,12 @@ class AIEnrichmentService:
 def get_ai_service() -> AIEnrichmentService:
     """Return a configured AIEnrichmentService.
 
-    Raises ConfigurationError immediately if ANTHROPIC_API_KEY is not set,
+    Raises AIConfigurationError immediately if ANTHROPIC_API_KEY is not set,
     so callers receive a clear error rather than a cryptic auth failure at
     request time.
     """
     if not settings.ANTHROPIC_API_KEY:
-        raise ConfigurationError(
+        raise AIConfigurationError(
             "ANTHROPIC_API_KEY is not configured. Set it in .env to enable AI analysis."
         )
     return AIEnrichmentService(settings.ANTHROPIC_API_KEY)
@@ -166,6 +152,7 @@ async def run_analysis_for_lead(lead_id: int, client_id: int) -> None:
     from app.core.database import async_session
     from app.core.redis import redis
     from app.models.lead import Lead
+    from app.services.dead_letter import DeadLetterService, DeadLetterType
 
     async with async_session() as db:
         lead = await db.get(Lead, lead_id)
@@ -212,7 +199,7 @@ async def run_analysis_for_lead(lead_id: int, client_id: int) -> None:
                 extra={"lead_id": lead_id, "client_id": client_id, "duration_ms": duration_ms},
             )
 
-        except (AIEnrichmentError, ConfigurationError) as exc:
+        except (AIEnrichmentError, AIConfigurationError) as exc:
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
             logger.error(
                 "AI analysis failed: %s",
@@ -223,7 +210,17 @@ async def run_analysis_for_lead(lead_id: int, client_id: int) -> None:
             await db.commit()
 
             # Write to dead letter queue so admins can retry
-            payload = json.dumps(
-                {"lead_id": lead_id, "client_id": client_id, "error": str(exc)}
-            )
-            await redis.lpush(AI_DL_QUEUE_KEY, payload)
+            try:
+                dl_svc = DeadLetterService(redis)
+                await dl_svc.push(
+                    DeadLetterType.AI_ANALYSIS,
+                    lead_id=lead_id,
+                    client_id=client_id,
+                    error=str(exc),
+                )
+            except Exception as dl_exc:
+                logger.error(
+                    "AI analysis: failed to write dead letter for lead %d: %s",
+                    lead_id,
+                    dl_exc,
+                )

@@ -20,6 +20,7 @@ from app.api.routing import router as routing_router  # noqa: E402
 from app.api.scoring import router as scoring_router  # noqa: E402
 from app.api.settings import router as settings_router  # noqa: E402
 from app.api.webhooks import router as webhooks_router  # noqa: E402
+from app.core.exception_handlers import register_exception_handlers  # noqa: E402
 from app.middleware.request_logging import RequestLoggingMiddleware  # noqa: E402
 
 if settings.SENTRY_DSN:
@@ -35,6 +36,7 @@ if settings.SENTRY_DSN:
 
 app = FastAPI(title="LeadEngine", version="0.1.0")
 
+register_exception_handlers(app)
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(

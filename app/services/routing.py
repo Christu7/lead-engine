@@ -125,10 +125,34 @@ async def route_lead(
         )
     else:
         logger.error(
-            "Routing failed for lead %d to %s: %s",
+            "Routing failed for lead %d to %s after all retries: %s",
             lead.id, destination, error,
-            extra={"lead_id": lead.id, "client_id": client_id, "destination": destination, "response_code": response_code},
+            extra={
+                "lead_id": lead.id,
+                "client_id": client_id,
+                "destination": destination,
+                "response_code": response_code,
+            },
         )
+        # Push to dead letter queue so admins can retry
+        try:
+            from app.core.redis import redis
+            from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+            dl_svc = DeadLetterService(redis)
+            await dl_svc.push(
+                DeadLetterType.ROUTING,
+                lead_id=lead.id,
+                client_id=client_id,
+                error=error or "Unknown routing error",
+                extra={"destination": destination, "response_code": response_code},
+            )
+        except Exception as dl_exc:
+            logger.error(
+                "Routing: failed to write dead letter for lead %d: %s",
+                lead.id,
+                dl_exc,
+            )
 
     db.add(RoutingLog(
         client_id=client_id,

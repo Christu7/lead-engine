@@ -109,21 +109,36 @@ def _apply_operator(operator: str, field_value, rule_value: str) -> bool:
     return False
 
 
-async def score_lead(db: AsyncSession, lead: Lead, client_id: int) -> int:
-    """Evaluate all active scoring rules against a lead. Updates lead.score and lead.score_details."""
-    stmt = select(ScoringRule).where(
-        ScoringRule.client_id == client_id,
-        ScoringRule.is_active.is_(True),
-    )
-    result = await db.execute(stmt)
-    rules = result.scalars().all()
+def calculate_score(lead: Lead, rules: list) -> tuple[int, dict]:
+    """Pure scoring function — no DB calls, no side effects.
 
+    Returns (clamped_score, score_details_dict).
+    Bad rules are skipped and logged; they never abort the whole calculation.
+    """
     breakdown = []
     raw_total = 0
 
     for rule in rules:
-        field_value = _resolve_field(lead, rule.field)
-        matched = _apply_operator(rule.operator, field_value, rule.value)
+        try:
+            field_value = _resolve_field(lead, rule.field)
+            matched = _apply_operator(rule.operator, field_value, rule.value)
+        except Exception as exc:
+            logger.warning(
+                "Scoring rule %d (field=%s) raised an error — skipping",
+                rule.id,
+                rule.field,
+                extra={"rule_id": rule.id, "error": str(exc)},
+            )
+            breakdown.append({
+                "rule_id": rule.id,
+                "field": rule.field,
+                "operator": rule.operator,
+                "value": rule.value,
+                "points": rule.points,
+                "matched": False,
+                "error": str(exc),
+            })
+            continue
 
         breakdown.append({
             "rule_id": rule.id,
@@ -138,13 +153,26 @@ async def score_lead(db: AsyncSession, lead: Lead, client_id: int) -> int:
             raw_total += rule.points
 
     clamped = max(0, min(100, raw_total))
-    lead.score = clamped
-    lead.score_details = {
+    score_details = {
         "rules": breakdown,
         "total_raw": raw_total,
         "total": clamped,
     }
+    return clamped, score_details
 
+
+async def score_lead(db: AsyncSession, lead: Lead, client_id: int) -> int:
+    """Evaluate all active scoring rules against a lead. Updates lead.score and lead.score_details."""
+    stmt = select(ScoringRule).where(
+        ScoringRule.client_id == client_id,
+        ScoringRule.is_active.is_(True),
+    )
+    result = await db.execute(stmt)
+    rules = list(result.scalars().all())
+
+    clamped, score_details = calculate_score(lead, rules)
+    lead.score = clamped
+    lead.score_details = score_details
     return clamped
 
 

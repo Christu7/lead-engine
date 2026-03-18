@@ -47,6 +47,9 @@ class EnrichmentPipeline:
 
         enrichment_keys = (client.settings or {}).get("enrichment", {})
 
+        providers_attempted = 0
+        providers_succeeded = 0
+
         try:
             for provider in self.providers:
                 name = provider.provider_name
@@ -55,12 +58,20 @@ class EnrichmentPipeline:
                 # Skip if no API key configured for this provider
                 api_key = enrichment_keys.get(key_field) if key_field else None
                 if not api_key:
-                    logger.debug("Enrichment: skipping %s — no API key for client %d", name, client_id)
+                    logger.debug(
+                        "Enrichment: skipping %s — no API key for client %d",
+                        name,
+                        client_id,
+                    )
                     continue
 
                 # Skip if provider says enrichment not needed
                 if not provider.should_enrich(lead):
-                    logger.debug("Enrichment: skipping %s — not needed for lead %d", name, lead_id)
+                    logger.debug(
+                        "Enrichment: skipping %s — not needed for lead %d",
+                        name,
+                        lead_id,
+                    )
                     continue
 
                 # Check cache
@@ -78,7 +89,9 @@ class EnrichmentPipeline:
                 else:
                     # Rate limit check
                     if not await rate_limiter.acquire(name, client_id):
-                        logger.info("Enrichment: rate-limited %s for client %d", name, client_id)
+                        logger.info(
+                            "Enrichment: rate-limited %s for client %d", name, client_id
+                        )
                         db.add(EnrichmentLog(
                             lead_id=lead_id,
                             client_id=client_id,
@@ -88,8 +101,27 @@ class EnrichmentPipeline:
                         ))
                         continue
 
-                    # Call provider
-                    result = await provider.enrich(lead, api_key)
+                    # Call provider — catch unexpected exceptions so one bad provider
+                    # doesn't abort the entire pipeline
+                    try:
+                        result = await provider.enrich(lead, api_key)
+                    except Exception as exc:
+                        logger.warning(
+                            "Enrichment: %s raised unexpectedly for lead %d: %s",
+                            name,
+                            lead_id,
+                            exc,
+                            extra={"lead_id": lead_id, "provider": name},
+                        )
+                        providers_attempted += 1
+                        db.add(EnrichmentLog(
+                            lead_id=lead_id,
+                            client_id=client_id,
+                            provider=name,
+                            success=False,
+                            raw_response={"error": str(exc)},
+                        ))
+                        continue
 
                     # Cache successful results
                     if result.success and result.data and cache_key:
@@ -104,7 +136,10 @@ class EnrichmentPipeline:
                     raw_response=result.raw_response,
                 ))
 
+                providers_attempted += 1
+
                 if result.success and result.data:
+                    providers_succeeded += 1
                     # Merge into enrichment_data under provider namespace
                     old = lead.enrichment_data or {}
                     lead.enrichment_data = {**old, name: result.data}
@@ -115,9 +150,45 @@ class EnrichmentPipeline:
                     if not lead.title and result.data.get("title"):
                         lead.title = result.data["title"]
                 elif not result.success:
-                    logger.warning("Enrichment: %s failed for lead %d: %s", name, lead_id, result.error)
+                    logger.warning(
+                        "Enrichment: %s failed for lead %d: %s",
+                        name,
+                        lead_id,
+                        result.error,
+                    )
 
-            lead.enrichment_status = "enriched"
+            # Determine final enrichment status
+            if providers_attempted == 0 or providers_succeeded == providers_attempted:
+                lead.enrichment_status = "enriched"
+            elif providers_succeeded > 0:
+                lead.enrichment_status = "partial"
+            else:
+                lead.enrichment_status = "failed"
+                logger.error(
+                    "Enrichment: all %d provider(s) failed for lead %d",
+                    providers_attempted,
+                    lead_id,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
+                # Push to dead letter so admins can retry
+                try:
+                    from app.core.redis import redis
+                    from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+                    dl_svc = DeadLetterService(redis)
+                    await dl_svc.push(
+                        DeadLetterType.ENRICHMENT,
+                        lead_id=lead_id,
+                        client_id=client_id,
+                        error=f"All {providers_attempted} enrichment provider(s) failed",
+                    )
+                except Exception as dl_exc:
+                    logger.error(
+                        "Enrichment: failed to write dead letter for lead %d: %s",
+                        lead_id,
+                        dl_exc,
+                    )
+
             await score_lead(db, lead, client_id)
             await route_lead(db, lead, client_id)
         except Exception:
