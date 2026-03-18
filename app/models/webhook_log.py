@@ -11,6 +11,9 @@ class WebhookLog(Base):
     __tablename__ = "webhook_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
+    )
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     lead_id: Mapped[int | None] = mapped_column(
@@ -23,6 +26,7 @@ class WebhookLog(Base):
     )
 
     __table_args__ = (
+        Index("ix_webhook_logs_client_id", "client_id"),
         Index("ix_webhook_logs_source", "source"),
         Index("ix_webhook_logs_status", "status"),
     )

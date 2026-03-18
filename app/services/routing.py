@@ -52,6 +52,12 @@ async def _post_with_retry(
             last_error = str(exc)
 
         if attempt < max_retries - 1:
+            logger.warning(
+                "Routing webhook attempt %d failed: %s — retrying",
+                attempt + 1,
+                last_error,
+                extra={"url": url, "attempt": attempt + 1},
+            )
             await asyncio.sleep(2**attempt)
 
     return last_code, last_error
@@ -75,6 +81,11 @@ async def route_lead(
         destination = "ghl_outbound"
         webhook_url = routing_cfg.get("ghl_outbound_webhook_url")
     else:
+        logger.info(
+            "Lead %d routed to manual_review (score %d below threshold %d)",
+            lead.id, score, outbound_threshold,
+            extra={"lead_id": lead.id, "client_id": client_id, "score": score},
+        )
         db.add(RoutingLog(
             client_id=client_id,
             lead_id=lead.id,
@@ -91,6 +102,11 @@ async def route_lead(
         )
 
     if not webhook_url:
+        logger.warning(
+            "No webhook URL configured for %s (client %d)",
+            destination, client_id,
+            extra={"lead_id": lead.id, "client_id": client_id, "destination": destination},
+        )
         return RoutingResult(
             destination=destination,
             status="no_config",
@@ -100,6 +116,19 @@ async def route_lead(
     payload = _build_ghl_payload(lead)
     response_code, error = await _post_with_retry(webhook_url, payload)
     success = error is None
+
+    if success:
+        logger.info(
+            "Lead %d routed to %s (score %d, status %d)",
+            lead.id, destination, score, response_code,
+            extra={"lead_id": lead.id, "client_id": client_id, "destination": destination},
+        )
+    else:
+        logger.error(
+            "Routing failed for lead %d to %s: %s",
+            lead.id, destination, error,
+            extra={"lead_id": lead.id, "client_id": client_id, "destination": destination, "response_code": response_code},
+        )
 
     db.add(RoutingLog(
         client_id=client_id,

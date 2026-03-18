@@ -133,13 +133,65 @@ async def get_leads_by_emails(db: AsyncSession, emails: list[str], client_id: in
     return {lead.email.lower(): lead for lead in result.scalars().all()}
 
 
+async def get_leads_by_apollo_ids(db: AsyncSession, apollo_ids: list[str], client_id: int) -> dict[str, Lead]:
+    """Fetch existing leads by apollo_id, returning a dict keyed by apollo_id."""
+    if not apollo_ids:
+        return {}
+    result = await db.execute(
+        select(Lead).where(
+            Lead.apollo_id.in_(apollo_ids),
+            Lead.client_id == client_id,
+        )
+    )
+    return {lead.apollo_id: lead for lead in result.scalars().all()}
+
+
+async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tuple[Lead, str]:
+    """Create or update a single lead. Checks by apollo_id first, then email.
+
+    Returns (lead, action) where action is 'created' or 'updated'.
+    """
+    existing: Lead | None = None
+
+    if data.apollo_id:
+        result = await db.execute(
+            select(Lead).where(Lead.apollo_id == data.apollo_id, Lead.client_id == client_id)
+        )
+        existing = result.scalar_one_or_none()
+
+    if existing is None:
+        result = await db.execute(
+            select(Lead).where(Lead.email == data.email, Lead.client_id == client_id)
+        )
+        existing = result.scalar_one_or_none()
+
+    if existing is None:
+        lead = Lead(**data.model_dump(), client_id=client_id)
+        db.add(lead)
+        await db.commit()
+        await db.refresh(lead)
+        await enqueue_enrichment(lead.id, client_id)
+        return lead, "created"
+
+    for key, value in data.model_dump(exclude_unset=True).items():
+        if key == "enrichment_data" and value is not None:
+            merged = dict(existing.enrichment_data or {})
+            merged.update(value)
+            existing.enrichment_data = merged
+        elif value is not None:
+            setattr(existing, key, value)
+    await db.commit()
+    await db.refresh(existing)
+    return existing, "updated"
+
+
 async def bulk_upsert_leads(
     db: AsyncSession,
     leads_data: list[LeadCreate],
     client_id: int,
     on_duplicate: str = "skip",
 ) -> dict[str, int]:
-    """Insert leads with duplicate email handling.
+    """Insert leads with duplicate handling. Checks apollo_id first, then email.
 
     Returns {"created": N, "updated": N, "skipped": N}.
     """
@@ -148,11 +200,15 @@ async def bulk_upsert_leads(
     skipped = 0
     new_leads: list[Lead] = []
 
+    apollo_ids = [ld.apollo_id for ld in leads_data if ld.apollo_id]
     emails = [ld.email.lower() for ld in leads_data]
-    existing = await get_leads_by_emails(db, emails, client_id)
+    by_apollo_id = await get_leads_by_apollo_ids(db, apollo_ids, client_id)
+    by_email = await get_leads_by_emails(db, emails, client_id)
 
     for data in leads_data:
-        existing_lead = existing.get(data.email.lower())
+        existing_lead = (
+            by_apollo_id.get(data.apollo_id) if data.apollo_id else None
+        ) or by_email.get(data.email.lower())
 
         if existing_lead is None:
             lead = Lead(**data.model_dump(), client_id=client_id)

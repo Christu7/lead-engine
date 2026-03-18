@@ -1,6 +1,31 @@
 from pydantic import BaseModel
 
 
+# --- Apollo webhook payload models ---
+
+class ApolloPhoneNumber(BaseModel):
+    raw_number: str | None = None
+    sanitized_number: str | None = None
+    type: str | None = None
+
+
+class ApolloContact(BaseModel):
+    id: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    name: str | None = None
+    email: str | None = None
+    organization_name: str | None = None
+    title: str | None = None
+    linkedin_url: str | None = None
+    phone_numbers: list[ApolloPhoneNumber] = []
+
+
+class ApolloWebhookPayload(BaseModel):
+    event_type: str | None = None
+    contact: ApolloContact
+
+
 # --- Typeform webhook payload models ---
 
 class TypeformFieldRef(BaseModel):

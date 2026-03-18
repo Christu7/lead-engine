@@ -2,12 +2,13 @@ import csv
 import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user
+from app.services.ai_enrichment import run_analysis_for_lead
 from app.schemas.lead import (
     BulkImportResponse,
     BulkImportRow,
@@ -202,6 +203,28 @@ async def route_lead_endpoint(
     result = await route_lead(db, lead, client_id)
     await db.commit()
     return result
+
+
+@router.post("/{lead_id}/ai-analyze", status_code=202)
+async def trigger_ai_analysis(
+    lead_id: int,
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger AI analysis for a lead. Returns 202 immediately; analysis runs in the background."""
+    lead = await lead_service.get_lead(db, lead_id, client_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.ai_status == "analyzing":
+        raise HTTPException(status_code=409, detail="Analysis already in progress")
+
+    # Mark as analyzing before returning so concurrent calls get 409
+    lead.ai_status = "analyzing"
+    await db.commit()
+
+    background_tasks.add_task(run_analysis_for_lead, lead_id, client_id)
+    return {"message": "AI analysis started", "lead_id": lead_id, "status": "analyzing"}
 
 
 @router.delete("/{lead_id}", status_code=204)

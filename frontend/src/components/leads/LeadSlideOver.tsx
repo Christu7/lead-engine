@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { enrichLead, fetchLeadDetail, routeLead } from "../../api/leads";
+import { useEffect, useRef, useState } from "react";
+import { enrichLead, fetchLeadDetail, routeLead, runAiAnalysis } from "../../api/leads";
 import type { LeadDetail } from "../../types/lead";
 import ScoreBadge from "./ScoreBadge";
 
@@ -8,16 +8,32 @@ interface LeadSlideOverProps {
   onClose: () => void;
 }
 
+const QUALIFICATION_COLORS = {
+  hot: "bg-red-100 text-red-800",
+  warm: "bg-yellow-100 text-yellow-800",
+  cold: "bg-blue-100 text-blue-800",
+} as const;
+
 export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [routing, setRouting] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = () => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
 
   useEffect(() => {
     if (!leadId) {
       setDetail(null);
+      stopPolling();
       return;
     }
     setLoading(true);
@@ -25,7 +41,34 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
     fetchLeadDetail(leadId)
       .then(setDetail)
       .finally(() => setLoading(false));
+
+    return () => stopPolling();
   }, [leadId]);
+
+  // Poll while ai_status === "analyzing"
+  useEffect(() => {
+    if (!leadId || !detail) return;
+
+    if (detail.ai_status === "analyzing") {
+      if (pollRef.current === null) {
+        pollRef.current = setInterval(async () => {
+          try {
+            const updated = await fetchLeadDetail(leadId);
+            setDetail(updated);
+            if (updated.ai_status !== "analyzing") {
+              stopPolling();
+            }
+          } catch {
+            stopPolling();
+          }
+        }, 3000);
+      }
+    } else {
+      stopPolling();
+    }
+
+    return () => stopPolling();
+  }, [leadId, detail?.ai_status]);
 
   if (!leadId) return null;
 
@@ -56,6 +99,20 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
       setFeedback("Routing failed");
     } finally {
       setRouting(false);
+    }
+  };
+
+  const handleAiAnalyze = async () => {
+    setAiLoading(true);
+    setFeedback(null);
+    try {
+      await runAiAnalysis(leadId);
+      // Optimistically update status so polling starts immediately
+      setDetail((prev) => prev ? { ...prev, ai_status: "analyzing" } : prev);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "AI analysis failed");
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -109,6 +166,92 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
                 </pre>
               </section>
             )}
+
+            {/* AI Analysis */}
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-500 uppercase">AI Analysis</h3>
+                {detail.ai_status === "analyzing" && (
+                  <span className="flex items-center gap-1.5 text-xs text-indigo-600">
+                    <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Analyzing…
+                  </span>
+                )}
+                {detail.ai_status === "completed" && (
+                  <span className="text-xs font-medium text-green-600">✓ Complete</span>
+                )}
+                {detail.ai_status === "failed" && (
+                  <span className="text-xs font-medium text-red-600">✗ Failed</span>
+                )}
+              </div>
+
+              {/* Not yet analyzed */}
+              {!detail.ai_status && (
+                <button
+                  onClick={handleAiAnalyze}
+                  disabled={aiLoading}
+                  className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                >
+                  {aiLoading ? "Starting…" : "Run AI Analysis"}
+                </button>
+              )}
+
+              {/* Failed — show retry */}
+              {detail.ai_status === "failed" && (
+                <button
+                  onClick={handleAiAnalyze}
+                  disabled={aiLoading}
+                  className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {aiLoading ? "Starting…" : "Retry AI Analysis"}
+                </button>
+              )}
+
+              {/* Completed — display results */}
+              {detail.ai_status === "completed" && detail.ai_analysis && (
+                <div className="space-y-4 text-sm">
+                  {/* Company Summary */}
+                  <div>
+                    <p className="font-medium text-gray-700 mb-1">Company Summary</p>
+                    <p className="text-gray-600 leading-relaxed">{detail.ai_analysis.company_summary}</p>
+                  </div>
+
+                  {/* Qualification */}
+                  <div>
+                    <p className="font-medium text-gray-700 mb-1">Qualification</p>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${
+                          QUALIFICATION_COLORS[detail.ai_analysis.qualification.rating]
+                        }`}
+                      >
+                        {detail.ai_analysis.qualification.rating}
+                      </span>
+                    </div>
+                    <p className="text-gray-600 leading-relaxed">{detail.ai_analysis.qualification.reasoning}</p>
+                  </div>
+
+                  {/* Icebreakers */}
+                  <div>
+                    <p className="font-medium text-gray-700 mb-1">Icebreakers</p>
+                    <ol className="list-decimal list-inside space-y-1.5 text-gray-600">
+                      {detail.ai_analysis.icebreakers.map((line, i) => (
+                        <li key={i} className="leading-relaxed">{line}</li>
+                      ))}
+                    </ol>
+                  </div>
+
+                  {/* Email Angle */}
+                  <div>
+                    <p className="font-medium text-gray-700 mb-1">Email Angle</p>
+                    <p className="text-gray-600 leading-relaxed">{detail.ai_analysis.email_angle}</p>
+                  </div>
+                </div>
+              )}
+            </section>
 
             {/* Actions */}
             <section>

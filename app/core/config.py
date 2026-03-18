@@ -8,6 +8,17 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    BACKEND_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
+    APOLLO_WEBHOOK_SECRET: str = ""
+    ADMIN_EMAIL: str = "admin@leadengine.local"
+    ADMIN_PASSWORD: str = "changeme"
+    DEFAULT_CLIENT_NAME: str = "Default"
+    LOG_LEVEL: str = "INFO"
+    SENTRY_DSN: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
     model_config = {"env_file": ".env"}
 

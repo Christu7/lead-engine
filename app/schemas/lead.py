@@ -10,6 +10,7 @@ class LeadCreate(BaseModel):
     company: str | None = None
     title: str | None = None
     source: str | None = None
+    apollo_id: str | None = None
     status: str = "new"
     score: int | None = None
     enrichment_data: dict | None = None
@@ -23,6 +24,7 @@ class LeadUpdate(BaseModel):
     company: str | None = None
     title: str | None = None
     source: str | None = None
+    apollo_id: str | None = None
     status: str | None = None
     score: int | None = None
     enrichment_data: dict | None = None
@@ -39,11 +41,15 @@ class LeadResponse(BaseModel):
     company: str | None
     title: str | None
     source: str | None
+    apollo_id: str | None
     status: str
     score: int | None
     enrichment_data: dict | None
     enrichment_status: str
     score_details: dict | None
+    ai_analysis: dict | None
+    ai_analyzed_at: datetime | None
+    ai_status: str | None
     created_at: datetime
     updated_at: datetime
 

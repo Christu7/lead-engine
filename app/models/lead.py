@@ -18,11 +18,15 @@ class Lead(Base):
     company: Mapped[str | None] = mapped_column(String(255))
     title: Mapped[str | None] = mapped_column(String(255))
     source: Mapped[str | None] = mapped_column(String(100))
+    apollo_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="new")
     score: Mapped[int | None] = mapped_column(Integer)
     enrichment_data: Mapped[dict | None] = mapped_column(JSONB)
     enrichment_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     score_details: Mapped[dict | None] = mapped_column(JSONB)
+    ai_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ai_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ai_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -39,6 +43,7 @@ class Lead(Base):
         Index("ix_leads_status", "status"),
         Index("ix_leads_client_id", "client_id"),
         Index("ix_leads_enrichment_status", "enrichment_status"),
+        Index("ix_leads_apollo_id", "apollo_id"),
     )
 
 

@@ -12,8 +12,23 @@ export interface Lead {
   enrichment_data: Record<string, unknown> | null;
   enrichment_status: string;
   score_details: Record<string, unknown> | null;
+  ai_analysis: AIAnalysis | null;
+  ai_analyzed_at: string | null;
+  ai_status: "analyzing" | "completed" | "failed" | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AIQualification {
+  rating: "hot" | "warm" | "cold";
+  reasoning: string;
+}
+
+export interface AIAnalysis {
+  company_summary: string;
+  icebreakers: string[];
+  qualification: AIQualification;
+  email_angle: string;
 }
 
 export interface EnrichmentLog {

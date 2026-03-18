@@ -32,11 +32,32 @@ def _apollo_name_transform(row: dict[str, str]) -> dict[str, str]:
 
 def _apollo_phone_transform(row: dict[str, str]) -> dict[str, str]:
     """Pick the first available phone from Apollo's multiple phone columns."""
-    for col in ("work direct phone", "mobile phone", "home phone", "corporate phone", "other phone"):
+    for col in ("corporate phone", "work direct phone", "mobile phone", "home phone", "other phone"):
         val = row.get(col, "") or ""
         if val.strip():
             row["phone"] = val.strip().lstrip("'")
             break
+    return row
+
+
+def _apollo_company_transform(row: dict[str, str]) -> dict[str, str]:
+    """Normalise company to a single key, accepting both 'Company' and 'Company Name'."""
+    val = row.get("company") or row.get("company name") or ""
+    if val.strip():
+        row["company"] = val.strip()
+    return row
+
+
+def _apollo_linkedin_transform(row: dict[str, str]) -> dict[str, str]:
+    """Normalise LinkedIn URL to a single key, accepting multiple column names."""
+    val = (
+        row.get("linkedin url")
+        or row.get("person linkedin url")
+        or row.get("linkedin")
+        or ""
+    )
+    if val.strip():
+        row["linkedin url"] = val.strip()
     return row
 
 
@@ -45,11 +66,12 @@ APOLLO_PROFILE = CSVFormatProfile(
     detect_columns={"first name", "last name", "email"},
     mappings=[
         FieldMapping("email", "email"),
-        FieldMapping("company name", "company"),
+        FieldMapping("company", "company"),
         FieldMapping("title", "title"),
+        FieldMapping("apollo contact id", "apollo_id"),
     ],
     enrichment_fields={
-        "person linkedin url": "linkedin_url",
+        "linkedin url": "linkedin_url",
         "website": "website",
         "city": "city",
         "state": "state",
@@ -57,7 +79,12 @@ APOLLO_PROFILE = CSVFormatProfile(
         "industry": "industry",
         "# employees": "employee_count",
     },
-    composite_transforms=[_apollo_name_transform, _apollo_phone_transform],
+    composite_transforms=[
+        _apollo_name_transform,
+        _apollo_phone_transform,
+        _apollo_company_transform,
+        _apollo_linkedin_transform,
+    ],
     source_value="apollo",
 )
 

@@ -1,10 +1,13 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
-import { login as apiLogin, logout as apiLogout } from "../api/client";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { login as apiLogin, logout as apiLogout, fetchMe, switchClient as apiSwitchClient, type AuthUser } from "../api/client";
 
 interface AuthContextValue {
   token: string | null;
+  user: AuthUser | null;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithToken: (token: string) => void;
+  switchClient: (clientId: number) => Promise<void>;
   logout: () => void;
 }
 
@@ -12,19 +15,50 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  const loadUser = useCallback(async () => {
+    try {
+      const me = await fetchMe();
+      setUser(me);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (token) {
+      loadUser();
+    } else {
+      setUser(null);
+    }
+  }, [token, loadUser]);
 
   const login = useCallback(async (email: string, password: string) => {
     await apiLogin(email, password);
-    setToken(localStorage.getItem("token"));
+    const newToken = localStorage.getItem("token");
+    setToken(newToken);
+  }, []);
+
+  const loginWithToken = useCallback((newToken: string) => {
+    localStorage.setItem("token", newToken);
+    setToken(newToken);
+  }, []);
+
+  const switchClient = useCallback(async (clientId: number) => {
+    const newToken = await apiSwitchClient(clientId);
+    localStorage.setItem("token", newToken);
+    setToken(newToken);
   }, []);
 
   const logout = useCallback(() => {
     apiLogout();
     setToken(null);
+    setUser(null);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ token, isAuthenticated: !!token, login, logout }}>
+    <AuthContext.Provider value={{ token, user, isAuthenticated: !!token, login, loginWithToken, switchClient, logout }}>
       {children}
     </AuthContext.Provider>
   );

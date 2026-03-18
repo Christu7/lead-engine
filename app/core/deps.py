@@ -1,29 +1,32 @@
-from fastapi import Depends, Header, HTTPException, Query, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import decode_access_token
-from app.models.user import User
+from app.core.security import TokenData, decode_access_token
+from app.models.user import ApiKey, User
 from app.services.auth import get_api_key as get_api_key_from_db
-from app.services.auth import get_user_by_email
-from app.services.client import get_client
+from app.services.auth import get_user_by_id
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    email = decode_access_token(token)
-    if email is None:
+async def get_token_data(token: str = Depends(oauth2_scheme)) -> TokenData:
+    data = decode_access_token(token)
+    if data is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await get_user_by_email(db, email)
+    return data
+
+
+async def get_current_user(
+    token_data: TokenData = Depends(get_token_data),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    user = await get_user_by_id(db, token_data.user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -44,33 +47,56 @@ async def get_current_active_user(
     return user
 
 
-async def get_api_key_auth(
+async def get_client_id(
+    token_data: TokenData = Depends(get_token_data),
+) -> int:
+    """Read active_client_id directly from the JWT — no DB lookup needed."""
+    if token_data.active_client_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No active client. Contact your administrator.",
+        )
+    return token_data.active_client_id
+
+
+async def require_admin(
+    token_data: TokenData = Depends(get_token_data),
+) -> TokenData:
+    if token_data.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return token_data
+
+
+async def _get_api_key_obj(
     x_api_key: str = Header(...),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> ApiKey:
+    """Validate the X-Api-Key header and return the ApiKey record."""
     api_key = await get_api_key_from_db(db, x_api_key)
     if api_key is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or inactive API key",
         )
+    return api_key
 
 
-async def get_client_id(
-    x_client_id: int | None = Header(None),
-    client_id: int | None = Query(None),
-    db: AsyncSession = Depends(get_db),
+async def get_api_key_auth(
+    api_key: ApiKey = Depends(_get_api_key_obj),
+) -> None:
+    """Router-level guard: requires a valid API key (does not resolve client_id)."""
+
+
+async def get_client_id_from_api_key(
+    api_key: ApiKey = Depends(_get_api_key_obj),
 ) -> int:
-    resolved = x_client_id or client_id
-    if resolved is None:
+    """Resolve client_id from an API key. Used by webhook endpoints."""
+    if api_key.client_id is None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="client_id is required (X-Client-ID header or client_id query param)",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This API key is not linked to a client. Contact your administrator.",
         )
-    client = await get_client(db, resolved)
-    if client is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Client {resolved} not found",
-        )
-    return resolved
+    return api_key.client_id

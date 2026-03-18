@@ -9,7 +9,9 @@ const navItems = [
 ];
 
 export default function Layout() {
-  const { logout } = useAuth();
+  const { user, switchClient, logout } = useAuth();
+
+  const showSelector = user && user.clients.length > 1;
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -31,7 +33,20 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="px-3 py-4">
+        <div className="space-y-2 px-3 py-4">
+          {showSelector && (
+            <select
+              value={user.active_client_id ?? ""}
+              onChange={(e) => switchClient(Number(e.target.value))}
+              className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {user.clients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             onClick={logout}
             className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white"

@@ -15,6 +15,7 @@ services:
 
   worker:
     build: .
+    entrypoint: []
     command: ["python", "-m", "app.worker"]
     env_file:
       - .env

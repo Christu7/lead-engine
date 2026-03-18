@@ -42,3 +42,9 @@ export async function routeLead(leadId: number): Promise<void> {
   const res = await apiFetch(`/leads/${leadId}/route`, { method: "POST" });
   if (!res.ok) throw new Error("Failed to route lead");
 }
+
+export async function runAiAnalysis(leadId: number): Promise<void> {
+  const res = await apiFetch(`/leads/${leadId}/ai-analyze`, { method: "POST" });
+  if (res.status === 409) throw new Error("Analysis already in progress");
+  if (!res.ok) throw new Error("Failed to start AI analysis");
+}
