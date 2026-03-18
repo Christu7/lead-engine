@@ -3,11 +3,33 @@
 These tests hit the real FastAPI app against a test PostgreSQL database.
 No enrichment pipeline runs (background tasks are not awaited in tests).
 """
+import hashlib
+import hmac
+import json
+from unittest.mock import patch
+
 import pytest
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.models.lead import Lead
 from app.models.webhook_log import WebhookLog
+from app.services.auth import hash_api_key
+
+
+_TEST_APOLLO_SECRET = "test-apollo-webhook-secret"
+
+
+def _apollo_headers(raw_body: bytes, api_key: str) -> dict:
+    """Build headers for a signed Apollo webhook request."""
+    sig = "sha256=" + hmac.new(
+        _TEST_APOLLO_SECRET.encode(), raw_body, hashlib.sha256
+    ).hexdigest()
+    return {
+        "x-api-key": api_key,
+        "x-apollo-signature-256": sig,
+        "content-type": "application/json",
+    }
 
 
 TYPEFORM_PAYLOAD = {
@@ -171,22 +193,24 @@ class TestApolloWebhook:
                 "phone_numbers": [],
             },
         }
+        raw_body = json.dumps(payload).encode()
 
-        # First call creates
-        resp1 = await http_client.post(
-            "/api/webhooks/apollo",
-            json=payload,
-            headers={"x-api-key": seeded_api_key},
-        )
-        assert resp1.status_code == 200
+        with patch.object(settings, "APOLLO_WEBHOOK_SECRET", _TEST_APOLLO_SECRET):
+            # First call creates
+            resp1 = await http_client.post(
+                "/api/webhooks/apollo",
+                content=raw_body,
+                headers=_apollo_headers(raw_body, seeded_api_key),
+            )
+            assert resp1.status_code == 200
 
-        # Second call with same apollo_id should upsert (not duplicate)
-        resp2 = await http_client.post(
-            "/api/webhooks/apollo",
-            json=payload,
-            headers={"x-api-key": seeded_api_key},
-        )
-        assert resp2.status_code == 200
+            # Second call with same apollo_id should upsert (not duplicate)
+            resp2 = await http_client.post(
+                "/api/webhooks/apollo",
+                content=raw_body,
+                headers=_apollo_headers(raw_body, seeded_api_key),
+            )
+            assert resp2.status_code == 200
 
         result = await db_session.execute(
             select(Lead).where(Lead.apollo_id == "apollo-123")
@@ -216,7 +240,7 @@ class TestApolloWebhook:
         await db_session.refresh(client_a)
         await db_session.refresh(client_b)
 
-        key_a = ApiKey(key="key-a", name="A", client_id=client_a.id, is_active=True)
+        key_a = ApiKey(key=hash_api_key("key-a"), name="A", client_id=client_a.id, is_active=True)
         db_session.add(key_a)
         await db_session.commit()
 

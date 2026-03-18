@@ -18,6 +18,14 @@ router = APIRouter(
 )
 
 
+def _mask_key(key: str | None) -> str | None:
+    """Return key with all but the last 4 characters replaced by asterisks."""
+    if not key:
+        return key
+    visible = key[-4:]
+    return f"{'*' * max(len(key) - 4, 0)}{visible}"
+
+
 @router.get("/routing", response_model=RoutingSettingsResponse)
 async def get_routing_settings(
     client_id: int = Depends(get_client_id),
@@ -57,7 +65,12 @@ async def get_enrichment_settings(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     enrichment = (client.settings or {}).get("enrichment", {})
-    return EnrichmentSettingsResponse(**enrichment)
+    # Mask keys — only the last 4 characters are revealed
+    return EnrichmentSettingsResponse(
+        apollo_api_key=_mask_key(enrichment.get("apollo_api_key")),
+        clearbit_api_key=_mask_key(enrichment.get("clearbit_api_key")),
+        proxycurl_api_key=_mask_key(enrichment.get("proxycurl_api_key")),
+    )
 
 
 @router.put("/enrichment", response_model=EnrichmentSettingsResponse)

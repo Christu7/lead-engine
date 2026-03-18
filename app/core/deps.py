@@ -61,13 +61,21 @@ async def get_client_id(
 
 async def require_admin(
     token_data: TokenData = Depends(get_token_data),
-) -> TokenData:
+    db: AsyncSession = Depends(get_db),
+) -> User:
     if token_data.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
-    return token_data
+    # Verify the user still exists and is active — JWT alone is not enough
+    user = await get_user_by_id(db, token_data.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account is disabled",
+        )
+    return user
 
 
 async def _get_api_key_obj(

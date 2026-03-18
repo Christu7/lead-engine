@@ -9,6 +9,7 @@ class EnrichmentResult:
     data: dict = field(default_factory=dict)
     raw_response: dict | None = None
     error: str | None = None
+    no_data: bool = False  # True when provider found no record (e.g. 404) — not a failure
 
 
 class EnrichmentProvider(ABC):

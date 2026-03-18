@@ -1,4 +1,5 @@
 import sentry_sdk
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -34,7 +35,23 @@ if settings.SENTRY_DSN:
         send_default_pii=False,
     )
 
-app = FastAPI(title="LeadEngine", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not settings.DEBUG:
+        if settings.SECRET_KEY == "change-me-in-production":
+            raise RuntimeError(
+                "SECRET_KEY is set to the default value. "
+                "Set a strong random SECRET_KEY in your environment before deploying."
+            )
+        if settings.ADMIN_PASSWORD == "changeme":
+            raise RuntimeError(
+                "ADMIN_PASSWORD is set to the default value. "
+                "Set a strong ADMIN_PASSWORD in your environment before deploying."
+            )
+    yield
+
+
+app = FastAPI(title="LeadEngine", version="0.1.0", lifespan=lifespan)
 
 register_exception_handlers(app)
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)

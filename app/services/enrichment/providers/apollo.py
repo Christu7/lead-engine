@@ -27,6 +27,7 @@ class ApolloProvider(EnrichmentProvider):
                         success=True,
                         data={},
                         raw_response=None,
+                        no_data=True,
                     )
 
                 resp.raise_for_status()

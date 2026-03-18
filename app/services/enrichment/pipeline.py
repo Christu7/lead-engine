@@ -138,17 +138,19 @@ class EnrichmentPipeline:
 
                 providers_attempted += 1
 
-                if result.success and result.data:
+                if result.success:
+                    # 404 / no_data counts as success — person not found is not a failure
                     providers_succeeded += 1
-                    # Merge into enrichment_data under provider namespace
-                    old = lead.enrichment_data or {}
-                    lead.enrichment_data = {**old, name: result.data}
+                    if result.data:
+                        # Merge into enrichment_data under provider namespace
+                        old = lead.enrichment_data or {}
+                        lead.enrichment_data = {**old, name: result.data}
 
-                    # Promote fields to lead if currently empty
-                    if not lead.company and result.data.get("company_name"):
-                        lead.company = result.data["company_name"]
-                    if not lead.title and result.data.get("title"):
-                        lead.title = result.data["title"]
+                        # Promote fields to lead if currently empty
+                        if not lead.company and result.data.get("company_name"):
+                            lead.company = result.data["company_name"]
+                        if not lead.title and result.data.get("title"):
+                            lead.title = result.data["title"]
                 elif not result.success:
                     logger.warning(
                         "Enrichment: %s failed for lead %d: %s",

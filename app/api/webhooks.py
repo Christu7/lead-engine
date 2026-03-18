@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -25,18 +25,26 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 @router.post("/apollo", response_model=LeadResponse, status_code=200)
 async def apollo_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
 
-    if settings.APOLLO_WEBHOOK_SECRET:
-        signature = request.headers.get("x-apollo-signature-256", "")
-        if not signature or not _verify_apollo_signature(body, signature, settings.APOLLO_WEBHOOK_SECRET):
-            raise HTTPException(status_code=401, detail="Invalid Apollo webhook signature")
+    # Signature verification is mandatory — no secret means the endpoint is misconfigured
+    if not settings.APOLLO_WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="APOLLO_WEBHOOK_SECRET is not configured on this server",
+        )
+    signature = request.headers.get("x-apollo-signature-256", "")
+    if not signature or not _verify_apollo_signature(body, signature, settings.APOLLO_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid Apollo webhook signature")
 
-    raw_payload = json.loads(body)
+    try:
+        raw_payload = json.loads(body)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON payload")
+
     log = await webhook_service.log_webhook(db, "apollo", raw_payload, client_id)
 
     try:
@@ -46,9 +54,9 @@ async def apollo_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # upsert_lead calls enqueue_enrichment for new leads — no background task needed
     lead, _ = await lead_service.upsert_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
-    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id, client_id)
     return lead
 
 
@@ -65,11 +73,14 @@ async def create_lead_webhook(
 @router.post("/typeform", response_model=LeadResponse, status_code=201)
 async def typeform_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    raw_payload = await request.json()
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON payload")
+
     log = await webhook_service.log_webhook(db, "typeform", raw_payload, client_id)
 
     try:
@@ -79,20 +90,23 @@ async def typeform_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # create_lead calls enqueue_enrichment — no separate background task needed
     lead = await lead_service.create_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
-    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id, client_id)
     return lead
 
 
 @router.post("/website", response_model=LeadResponse, status_code=201)
 async def website_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    raw_payload = await request.json()
+    try:
+        raw_payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid JSON payload")
+
     log = await webhook_service.log_webhook(db, "website", raw_payload, client_id)
 
     try:
@@ -102,7 +116,7 @@ async def website_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # create_lead calls enqueue_enrichment — no separate background task needed
     lead = await lead_service.create_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
-    background_tasks.add_task(webhook_service.run_enrichment_background, lead.id, client_id)
     return lead

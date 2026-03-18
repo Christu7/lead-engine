@@ -168,6 +168,8 @@ async def enrich_lead(
     lead = await lead_service.get_lead(db, lead_id, client_id)
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
+    if lead.enrichment_status == "enriching":
+        raise HTTPException(status_code=409, detail="Enrichment already in progress")
     lead.enrichment_data = None
     lead.enrichment_status = "pending"
     await db.commit()

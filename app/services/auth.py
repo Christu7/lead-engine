@@ -1,9 +1,20 @@
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import verify_password
 from app.models.client import Client
 from app.models.user import ApiKey, User, UserClient
+
+
+def hash_api_key(raw_key: str) -> str:
+    """Return the SHA-256 hex digest of a raw API key.
+
+    Keys are stored as hashes so that a DB breach does not expose usable credentials.
+    Always hash before storing or looking up.
+    """
+    return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
@@ -71,7 +82,11 @@ async def get_default_client_id(db: AsyncSession, user_id: int, role: str) -> in
 
 
 async def get_api_key(db: AsyncSession, key: str) -> ApiKey | None:
+    """Look up an API key by comparing SHA-256 hashes.
+
+    The raw key is never stored — only its hash.
+    """
     result = await db.execute(
-        select(ApiKey).where(ApiKey.key == key, ApiKey.is_active == True)  # noqa: E712
+        select(ApiKey).where(ApiKey.key == hash_api_key(key), ApiKey.is_active == True)  # noqa: E712
     )
     return result.scalar_one_or_none()

@@ -20,12 +20,19 @@ async def acquire(provider_name: str, client_id: int) -> bool:
     now = time.time()
     window_start = now - window
 
+    # Check current count first — do NOT add yet
     pipe = redis.pipeline()
     pipe.zremrangebyscore(key, 0, window_start)
     pipe.zcard(key)
-    pipe.zadd(key, {str(now): now})
-    pipe.expire(key, window)
     results = await pipe.execute()
 
     current_count = results[1]
-    return current_count < max_requests
+    if current_count >= max_requests:
+        return False
+
+    # Under the limit — record this request
+    pipe = redis.pipeline()
+    pipe.zadd(key, {str(now): now})
+    pipe.expire(key, window)
+    await pipe.execute()
+    return True

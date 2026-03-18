@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.security import create_access_token
 from app.main import app
+from app.services.auth import hash_api_key
 
 
 # ---------------------------------------------------------------------------
@@ -244,11 +245,11 @@ async def seeded_api_key(db_session, seeded_client):
 
     raw_key = "test-api-key-12345"
     api_key = ApiKey(
-        key=raw_key,
+        key=hash_api_key(raw_key),  # store the hash, never the plaintext
         name="test",
         client_id=seeded_client.id,
         is_active=True,
     )
     db_session.add(api_key)
     await db_session.commit()
-    return raw_key
+    return raw_key  # return the raw key so tests can send it in headers
