@@ -277,3 +277,5 @@ class EnrichmentPipeline:
                     lead_id,
                     dl_exc,
                 )
+        finally:
+            await db.commit()
