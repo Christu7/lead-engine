@@ -49,6 +49,11 @@ async def lifespan(app: FastAPI):
                 "ADMIN_PASSWORD is set to the default value. "
                 "Set a strong ADMIN_PASSWORD in your environment before deploying."
             )
+        if not settings.ENCRYPTION_KEY:
+            raise RuntimeError(
+                "ENCRYPTION_KEY is not set. "
+                "Set a strong random ENCRYPTION_KEY in your environment before deploying."
+            )
     yield
 
 

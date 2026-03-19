@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_client_id, get_current_user, require_admin
+from app.core.deps import get_client_id, get_current_active_user, require_admin
 from app.models.company import Company
 from app.models.lead import Lead
 from app.schemas.company import (
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["companies"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_active_user)],
 )
 
 

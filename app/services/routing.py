@@ -5,6 +5,8 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dynamic_config import dynamic_config
+from app.core.exceptions import ConfigurationError
 from app.models.client import Client
 from app.models.lead import Lead, RoutingLog
 from app.schemas.routing import DestinationStats, RoutingResult, RoutingStatsResponse
@@ -77,9 +79,19 @@ async def route_lead(
     if score >= inbound_threshold:
         destination = "ghl_inbound"
         webhook_url = routing_cfg.get("ghl_inbound_webhook_url")
+        if not webhook_url:
+            try:
+                webhook_url = await dynamic_config.get_key(db, "ghl_inbound")
+            except ConfigurationError:
+                webhook_url = None
     elif score >= outbound_threshold:
         destination = "ghl_outbound"
         webhook_url = routing_cfg.get("ghl_outbound_webhook_url")
+        if not webhook_url:
+            try:
+                webhook_url = await dynamic_config.get_key(db, "ghl_outbound")
+            except ConfigurationError:
+                webhook_url = None
     else:
         logger.info(
             "Lead %d routed to manual_review (score %d below threshold %d)",

@@ -2,6 +2,8 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dynamic_config import dynamic_config
+from app.core.exceptions import ConfigurationError
 from app.models.client import Client
 from app.models.lead import EnrichmentLog, Lead
 from app.services.enrichment import rate_limiter
@@ -49,14 +51,24 @@ class EnrichmentPipeline:
 
         providers_attempted = 0
         providers_succeeded = 0
+        providers_rate_limited = 0
 
         try:
             for provider in self.providers:
                 name = provider.provider_name
                 key_field = API_KEY_MAP.get(name)
 
-                # Skip if no API key configured for this provider
-                api_key = enrichment_keys.get(key_field) if key_field else None
+                # Resolve API key: dynamic_config (ApiKeyStore → env var) first,
+                # then fall back to legacy client.settings["enrichment"] keys.
+                api_key: str | None = None
+                try:
+                    api_key = await dynamic_config.get_key(db, name)
+                except ConfigurationError:
+                    pass
+
+                if not api_key:
+                    api_key = enrichment_keys.get(key_field) if key_field else None
+
                 if not api_key:
                     logger.debug(
                         "Enrichment: skipping %s — no API key for client %d",
@@ -74,9 +86,9 @@ class EnrichmentPipeline:
                     )
                     continue
 
-                # Check cache
+                # Check cache (keyed by client_id to prevent cross-tenant leakage)
                 cache_key = _cache_key_for_provider(name, lead)
-                cached = await get_cached(name, cache_key) if cache_key else None
+                cached = await get_cached(name, client_id, cache_key) if cache_key else None
 
                 if cached is not None:
                     logger.info("Enrichment: cache hit for %s lead %d", name, lead_id)
@@ -92,6 +104,7 @@ class EnrichmentPipeline:
                         logger.info(
                             "Enrichment: rate-limited %s for client %d", name, client_id
                         )
+                        providers_rate_limited += 1
                         db.add(EnrichmentLog(
                             lead_id=lead_id,
                             client_id=client_id,
@@ -123,9 +136,9 @@ class EnrichmentPipeline:
                         ))
                         continue
 
-                    # Cache successful results
+                    # Cache successful results (keyed by client_id)
                     if result.success and result.data and cache_key:
-                        await set_cached(name, cache_key, result.data)
+                        await set_cached(name, client_id, cache_key, result.data)
 
                 # Log result
                 db.add(EnrichmentLog(
@@ -160,7 +173,24 @@ class EnrichmentPipeline:
                     )
 
             # Determine final enrichment status
-            if providers_attempted == 0 or providers_succeeded == providers_attempted:
+            if providers_attempted == 0 and providers_rate_limited > 0:
+                # All providers were rate-limited — defer and requeue
+                lead.enrichment_status = "deferred"
+                logger.warning(
+                    "Enrichment: all providers rate-limited for lead %d, requeueing",
+                    lead_id,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
+                try:
+                    from app.services.enrichment.queue import enqueue_enrichment
+                    await enqueue_enrichment(lead_id, client_id)
+                except Exception as requeue_exc:
+                    logger.error(
+                        "Enrichment: failed to requeue deferred lead %d: %s",
+                        lead_id,
+                        requeue_exc,
+                    )
+            elif providers_attempted == 0 or providers_succeeded == providers_attempted:
                 lead.enrichment_status = "enriched"
             elif providers_succeeded > 0:
                 lead.enrichment_status = "partial"
@@ -191,8 +221,6 @@ class EnrichmentPipeline:
                         dl_exc,
                     )
 
-            await score_lead(db, lead, client_id)
-            await route_lead(db, lead, client_id)
         except Exception as exc:
             lead.enrichment_status = "failed"
             logger.exception(
@@ -220,3 +248,32 @@ class EnrichmentPipeline:
             raise
         finally:
             await db.commit()
+
+        # Score and route — separate concern, isolated from enrichment errors
+        try:
+            await score_lead(db, lead, client_id)
+            await route_lead(db, lead, client_id)
+        except Exception as exc:
+            logger.error(
+                "Enrichment pipeline: scoring/routing failed for lead %d: %s",
+                lead_id,
+                exc,
+                extra={"lead_id": lead_id, "client_id": client_id},
+            )
+            try:
+                from app.core.redis import redis
+                from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+                dl_svc = DeadLetterService(redis)
+                await dl_svc.push(
+                    DeadLetterType.ROUTING,
+                    lead_id=lead_id,
+                    client_id=client_id,
+                    error=f"Scoring/routing failed after enrichment: {exc}",
+                )
+            except Exception as dl_exc:
+                logger.error(
+                    "Enrichment: failed to write dead letter for lead %d: %s",
+                    lead_id,
+                    dl_exc,
+                )

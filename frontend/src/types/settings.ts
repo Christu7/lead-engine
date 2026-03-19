@@ -10,3 +10,10 @@ export interface EnrichmentSettings {
   clearbit_api_key: string | null;
   proxycurl_api_key: string | null;
 }
+
+export interface ApiKeyEntry {
+  key_name: string;
+  is_set: boolean;
+  is_active: boolean;
+  last_verified_at: string | null;
+}

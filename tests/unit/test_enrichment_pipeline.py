@@ -7,6 +7,7 @@ pipeline orchestration logic.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core.exceptions import ConfigurationError
 from app.models.client import Client
 from app.models.lead import Lead
 from app.services.enrichment.base import EnrichmentResult
@@ -80,6 +81,18 @@ def _patch_rate_limiter_ok():
     return patch("app.services.enrichment.pipeline.rate_limiter", rl)
 
 
+def _patch_dynamic_config_no_key():
+    """Patch dynamic_config.get_key to raise ConfigurationError.
+
+    This forces pipeline to fall back to client.settings["enrichment"] keys,
+    which is the path these unit tests exercise.
+    """
+    return patch(
+        "app.services.enrichment.pipeline.dynamic_config.get_key",
+        AsyncMock(side_effect=ConfigurationError("no key in store")),
+    )
+
+
 @pytest.mark.unit
 class TestEnrichmentPipeline:
 
@@ -97,6 +110,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=50)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([provider])
             await pipeline.run(db, 1, 1)
@@ -126,6 +140,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=30)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([apollo, clearbit])
             await pipeline.run(db, 1, 1)
@@ -148,6 +163,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=0)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
             patch("app.services.dead_letter.DeadLetterService.push", mock_dl),
             patch("app.core.redis.redis"),  # prevent real redis connection
         ):
@@ -169,6 +185,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=0)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([provider])
             await pipeline.run(db, 1, 1)
@@ -196,6 +213,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=50)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([provider])
             await pipeline.run(db, 1, 1)
@@ -222,13 +240,15 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=0)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             patch("app.services.enrichment.pipeline.rate_limiter", rl),
+            patch("app.services.enrichment.queue.enqueue_enrichment", AsyncMock()),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([provider])
             await pipeline.run(db, 1, 1)
 
         provider.enrich.assert_not_called()
-        # Rate-limited provider was not attempted — no status change from "enriched"
-        assert lead.enrichment_status == "enriched"
+        # All providers were rate-limited — lead must be deferred for retry, not silently "enriched"
+        assert lead.enrichment_status == "deferred"
 
     async def test_provider_exception_does_not_abort_pipeline(self):
         """An unexpected exception from a provider should be caught; pipeline continues."""
@@ -253,6 +273,7 @@ class TestEnrichmentPipeline:
             patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=40)),
             patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
             _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
         ):
             pipeline = EnrichmentPipeline([apollo, clearbit])
             await pipeline.run(db, 1, 1)

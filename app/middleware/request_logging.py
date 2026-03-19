@@ -11,6 +11,20 @@ from app.core.security import decode_access_token
 
 logger = logging.getLogger("api.requests")
 
+_SENSITIVE_SUBSTRINGS = ("key", "secret", "password", "token")
+
+
+def _redact_body(body: object) -> object:
+    """Recursively redact dict values whose keys contain sensitive substrings."""
+    if isinstance(body, dict):
+        return {
+            k: "[REDACTED]" if any(s in k.lower() for s in _SENSITIVE_SUBSTRINGS) else _redact_body(v)
+            for k, v in body.items()
+        }
+    if isinstance(body, list):
+        return [_redact_body(item) for item in body]
+    return body
+
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -54,7 +68,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Only log request body on failure, and only for mutation methods
         if body_bytes and response.status_code >= 400:
             try:
-                extra["request_body"] = json.loads(body_bytes)
+                extra["request_body"] = _redact_body(json.loads(body_bytes))
             except Exception:
                 extra["request_body"] = body_bytes.decode("utf-8", errors="replace")[:500]
 

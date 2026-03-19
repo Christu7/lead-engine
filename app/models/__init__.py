@@ -1,3 +1,4 @@
+from app.models.api_key_store import ApiKeyStore
 from app.models.client import Client
 from app.models.company import Company
 from app.models.lead import EnrichmentLog, Lead, RoutingLog
@@ -6,6 +7,7 @@ from app.models.user import ApiKey, User, UserClient
 from app.models.webhook_log import WebhookLog
 
 __all__ = [
+    "ApiKeyStore",
     "Client",
     "Company",
     "Lead",

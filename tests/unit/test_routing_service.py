@@ -7,6 +7,7 @@ import respx
 import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core.exceptions import ConfigurationError
 from app.models.client import Client
 from app.models.lead import Lead, RoutingLog
 from app.services.routing import _build_ghl_payload, route_lead
@@ -138,7 +139,12 @@ class TestRouteLeadDestination:
         )
         db = _make_db(lead, client)
 
-        result = await route_lead(db, lead, 1)
+        # No global key in ApiKeyStore either — dynamic_config should raise ConfigurationError
+        with patch(
+            "app.services.routing.dynamic_config.get_key",
+            AsyncMock(side_effect=ConfigurationError("no key")),
+        ):
+            result = await route_lead(db, lead, 1)
 
         assert result.status == "no_config"
         assert result.destination == "ghl_inbound"

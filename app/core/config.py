@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     SENTRY_DSN: str = ""
     ANTHROPIC_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+    CLEARBIT_API_KEY: str = ""
+    PROXYCURL_API_KEY: str = ""
+    ENCRYPTION_KEY: str = ""
+    AI_PROVIDER: str = "anthropic"
     DEBUG: bool = False
     TEST_DATABASE_URL: str = ""
 

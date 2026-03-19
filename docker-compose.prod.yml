@@ -25,7 +25,16 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       SECRET_KEY: ${SECRET_KEY}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      APOLLO_WEBHOOK_SECRET: ${APOLLO_WEBHOOK_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEBUG: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -48,6 +57,10 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEBUG: "false"
     depends_on:
       db:
         condition: service_healthy

@@ -9,6 +9,10 @@ class LeadEngineError(Exception):
     """Base class for all LeadEngine domain exceptions."""
 
 
+class ConfigurationError(LeadEngineError):
+    """A required configuration value (e.g. API key, encryption key) is missing or invalid."""
+
+
 # ---------------------------------------------------------------------------
 # Enrichment
 # ---------------------------------------------------------------------------

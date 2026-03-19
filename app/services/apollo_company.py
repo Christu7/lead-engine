@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.exceptions import EnrichmentProviderError
+from app.core.dynamic_config import dynamic_config
+from app.core.exceptions import ConfigurationError, EnrichmentProviderError
 from app.models.company import Company
 from app.schemas.lead import LeadCreate
 from app.services.company import auto_link_leads_by_domain, _normalize_domain
@@ -15,13 +15,22 @@ from app.services.lead import upsert_lead
 
 logger = logging.getLogger(__name__)
 
-_APOLLO_HEADERS = {
+_APOLLO_BASE_HEADERS = {
     "Content-Type": "application/json",
 }
 
 
-def _apollo_headers() -> dict:
-    return {**_APOLLO_HEADERS, "x-api-key": settings.APOLLO_API_KEY}
+async def _apollo_headers(db: AsyncSession) -> dict:
+    """Resolve Apollo API key via dynamic_config and return request headers."""
+    try:
+        api_key = await dynamic_config.get_key(db, "apollo")
+    except ConfigurationError as exc:
+        raise EnrichmentProviderError(
+            provider="apollo_org",
+            lead_id=0,  # not yet known at header-build time
+            reason=str(exc),
+        ) from exc
+    return {**_APOLLO_BASE_HEADERS, "x-api-key": api_key}
 
 
 class ApolloCompanyEnrichmentService:
@@ -54,10 +63,11 @@ class ApolloCompanyEnrichmentService:
             params["name"] = company.name
 
         try:
+            headers = await _apollo_headers(db)
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(
                     "https://api.apollo.io/v1/organizations/enrich",
-                    headers=_apollo_headers(),
+                    headers=headers,
                     params=params,
                 )
                 resp.raise_for_status()
@@ -219,10 +229,11 @@ class ApolloCompanyEnrichmentService:
         }
 
         try:
+            headers = await _apollo_headers(db)
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     "https://api.apollo.io/v1/mixed_people/search",
-                    headers=_apollo_headers(),
+                    headers=headers,
                     json=payload,
                 )
                 resp.raise_for_status()
