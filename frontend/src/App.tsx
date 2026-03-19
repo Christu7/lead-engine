@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import Leads from "./pages/Leads";
 import ScoringRules from "./pages/ScoringRules";
 import Settings from "./pages/Settings";
+import Companies from "./pages/Companies";
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="leads" element={<Leads />} />
+            <Route path="companies" element={<Companies />} />
             <Route path="scoring-rules" element={<ScoringRules />} />
             <Route path="settings" element={<Settings />} />
           </Route>
