@@ -93,6 +93,67 @@ FORMAT_REGISTRY: dict[str, CSVFormatProfile] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Company CSV mappings
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompanyFieldMapping:
+    csv_columns: list[str]  # lowercase aliases that map to this field
+    company_field: str
+    cast: type | None = None  # optional type cast (e.g. int)
+    post_process: str | None = None  # named transform key (e.g. "normalize_domain")
+
+
+def _normalize_domain_value(val: str) -> str:
+    """Strip protocol, www., and trailing slash from a domain/URL."""
+    val = val.strip()
+    for prefix in ("https://", "http://"):
+        if val.startswith(prefix):
+            val = val[len(prefix):]
+    if val.startswith("www."):
+        val = val[4:]
+    return val.rstrip("/").lower()
+
+
+COMPANY_FIELD_MAPPINGS: list[CompanyFieldMapping] = [
+    CompanyFieldMapping(["company", "name"], "name"),
+    CompanyFieldMapping(["website", "company website url"], "domain", post_process="normalize_domain"),
+    CompanyFieldMapping(["industry"], "industry"),
+    CompanyFieldMapping(["# employees", "employees", "number of employees"], "employee_count", cast=int),
+    CompanyFieldMapping(["city"], "location_city"),
+    CompanyFieldMapping(["state"], "location_state"),
+    CompanyFieldMapping(["country"], "location_country"),
+    CompanyFieldMapping(["apollo account id", "account id"], "apollo_id"),
+    CompanyFieldMapping(["funding stage"], "funding_stage"),
+]
+
+
+def parse_company_csv_row(row: dict[str, str]) -> dict:
+    """Map a raw CSV row dict to a Company data dict using COMPANY_FIELD_MAPPINGS."""
+    normalized = {k.strip().lower(): v for k, v in row.items()}
+    result: dict = {}
+
+    for mapping in COMPANY_FIELD_MAPPINGS:
+        for col in mapping.csv_columns:
+            val = normalized.get(col)
+            if val and val.strip():
+                val = val.strip()
+                if mapping.post_process == "normalize_domain":
+                    val = _normalize_domain_value(val)
+                if mapping.cast is not None:
+                    try:
+                        val = mapping.cast(val)
+                    except (ValueError, TypeError):
+                        val = None
+                if val is not None:
+                    result[mapping.company_field] = val
+                break  # first alias wins
+
+    return result
+
+
 def detect_format(headers: list[str] | None) -> CSVFormatProfile | None:
     """Match CSV headers against registered format profiles.
 

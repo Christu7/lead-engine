@@ -12,6 +12,7 @@ configure_logging(settings.LOG_LEVEL)
 
 from app.api.admin import router as admin_router  # noqa: E402
 from app.api.auth import router as auth_router  # noqa: E402
+from app.api.companies import router as companies_router  # noqa: E402
 from app.api.clients import router as clients_router  # noqa: E402
 from app.api.dashboard import router as dashboard_router  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
@@ -71,6 +72,7 @@ app.include_router(metrics_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(clients_router, prefix="/api")
 app.include_router(leads_router, prefix="/api")
+app.include_router(companies_router, prefix="/api/companies", tags=["companies"])
 app.include_router(routing_router, prefix="/api")
 app.include_router(scoring_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")

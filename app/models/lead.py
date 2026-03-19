@@ -1,7 +1,8 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -19,6 +20,11 @@ class Lead(Base):
     title: Mapped[str | None] = mapped_column(String(255))
     source: Mapped[str | None] = mapped_column(String(100))
     apollo_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="new")
     score: Mapped[int | None] = mapped_column(Integer)
     enrichment_data: Mapped[dict | None] = mapped_column(JSONB)
@@ -44,6 +50,7 @@ class Lead(Base):
         Index("ix_leads_client_id", "client_id"),
         Index("ix_leads_enrichment_status", "enrichment_status"),
         Index("ix_leads_apollo_id", "apollo_id"),
+        Index("ix_leads_company_id", "company_id"),
     )
 
 

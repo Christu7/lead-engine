@@ -1,0 +1,414 @@
+"""Company API endpoints.
+
+All routes enforce client_id from the JWT (never from request body/headers).
+Multi-tenancy is a hard security boundary — every query filters by client_id.
+"""
+import csv
+import io
+import logging
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.deps import get_client_id, get_current_user, require_admin
+from app.models.company import Company
+from app.models.lead import Lead
+from app.schemas.company import (
+    CompanyBulkUploadResponse,
+    CompanyCreate,
+    CompanyDetailResponse,
+    CompanyResponse,
+    CompanyUpdate,
+    ContactPullRequest,
+)
+from app.schemas.lead import LeadResponse
+from app.services.company import (
+    create_company,
+    delete_company,
+    get_company,
+    get_company_by_domain,
+    list_companies,
+    upsert_company,
+)
+from app.services.csv_mapping import parse_company_csv_row
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    tags=["companies"],
+    dependencies=[Depends(get_current_user)],
+)
+
+
+# ---------------------------------------------------------------------------
+# Background task helpers — each opens its own DB session, never reuses the
+# request session which is closed before background tasks run.
+# ---------------------------------------------------------------------------
+
+
+async def _bg_enrich_company(company_id: uuid.UUID, client_id: int) -> None:
+    """Background task: run Apollo org enrichment for a single company."""
+    from app.core.database import async_session
+    from app.services.apollo_company import ApolloCompanyEnrichmentService
+    from app.services.company import get_company as _get_company
+
+    logger.info(
+        "Background: enrich_company started",
+        extra={"company_id": str(company_id), "client_id": client_id},
+    )
+    try:
+        async with async_session() as db:
+            company = await _get_company(db, company_id, client_id)
+            if company is None:
+                logger.error(
+                    "Background: enrich_company — company not found or wrong client",
+                    extra={"company_id": str(company_id), "client_id": client_id},
+                )
+                return
+            svc = ApolloCompanyEnrichmentService()
+            await svc.enrich_company(db, company, client_id)
+    except Exception as exc:
+        logger.error(
+            "Background: enrich_company failed",
+            extra={"company_id": str(company_id), "client_id": client_id, "error": str(exc)},
+        )
+
+
+async def _bg_pull_contacts(
+    company_id: uuid.UUID,
+    client_id: int,
+    titles: list[str],
+    seniorities: list[str],
+    limit: int,
+) -> None:
+    """Background task: pull Apollo contacts for a company and upsert as leads."""
+    from app.core.database import async_session
+    from app.services.apollo_company import ApolloCompanyEnrichmentService
+    from app.services.company import get_company as _get_company
+
+    logger.info(
+        "Background: pull_contacts started",
+        extra={"company_id": str(company_id), "client_id": client_id},
+    )
+    try:
+        async with async_session() as db:
+            company = await _get_company(db, company_id, client_id)
+            if company is None:
+                logger.error(
+                    "Background: pull_contacts — company not found or wrong client",
+                    extra={"company_id": str(company_id), "client_id": client_id},
+                )
+                return
+            svc = ApolloCompanyEnrichmentService()
+            await svc.pull_contacts_from_company(
+                db, company, client_id, titles=titles, seniorities=seniorities, limit=limit
+            )
+    except Exception as exc:
+        logger.error(
+            "Background: pull_contacts failed",
+            extra={"company_id": str(company_id), "client_id": client_id, "error": str(exc)},
+        )
+
+
+async def _bg_enrich_one(company_id: uuid.UUID, client_id: int) -> None:
+    """Thin wrapper used by bulk-enrich so each company runs in its own session."""
+    await _bg_enrich_company(company_id, client_id)
+
+
+# ---------------------------------------------------------------------------
+# Helper: inject lead_count into CompanyResponse without N+1
+# ---------------------------------------------------------------------------
+
+
+async def _attach_lead_counts(
+    db: AsyncSession,
+    companies: list[Company],
+    client_id: int,
+) -> list[CompanyResponse]:
+    """Return CompanyResponse objects with lead_count populated via a single query."""
+    if not companies:
+        return []
+
+    company_ids = [c.id for c in companies]
+
+    count_rows = await db.execute(
+        select(Lead.company_id, func.count(Lead.id).label("cnt"))
+        .where(
+            Lead.company_id.in_(company_ids),
+            Lead.client_id == client_id,
+        )
+        .group_by(Lead.company_id)
+    )
+    lead_counts: dict[uuid.UUID, int] = {row.company_id: row.cnt for row in count_rows}
+
+    responses = []
+    for company in companies:
+        resp = CompanyResponse.model_validate(company)
+        resp = resp.model_copy(update={"lead_count": lead_counts.get(company.id, 0)})
+        responses.append(resp)
+    return responses
+
+
+# ---------------------------------------------------------------------------
+# Routes — static paths before parametric to avoid ambiguity
+# ---------------------------------------------------------------------------
+
+
+@router.get("/", summary="List companies")
+async def list_companies_endpoint(
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    enrichment_status: str | None = None,
+    abm_status: str | None = None,
+    industry: str | None = None,
+) -> dict:
+    filters = {
+        "enrichment_status": enrichment_status,
+        "abm_status": abm_status,
+        "industry": industry,
+    }
+    companies, total = await list_companies(db, client_id=client_id, skip=skip, limit=limit, filters=filters)
+    items = await _attach_lead_counts(db, companies, client_id)
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/bulk", response_model=CompanyBulkUploadResponse, summary="Bulk upload companies from CSV")
+async def bulk_upload_companies(
+    file: UploadFile,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> CompanyBulkUploadResponse:
+    if not file.filename or not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+
+    try:
+        content = (await file.read()).decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+
+    reader = csv.DictReader(io.StringIO(content))
+
+    created = 0
+    updated = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for row_num, row in enumerate(reader, start=1):
+        try:
+            data = parse_company_csv_row(row)
+            if not data.get("name"):
+                errors.append(f"Row {row_num}: missing required field 'name'")
+                skipped += 1
+                continue
+            _, was_created = await upsert_company(db, data, client_id)
+            if was_created:
+                created += 1
+            else:
+                updated += 1
+        except Exception as exc:
+            errors.append(f"Row {row_num}: {exc}")
+            skipped += 1
+
+    return CompanyBulkUploadResponse(
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+    )
+
+
+@router.post(
+    "/bulk-enrich",
+    status_code=202,
+    summary="Queue all pending/failed companies for enrichment (admin only)",
+)
+async def bulk_enrich_companies(
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> dict:
+    result = await db.execute(
+        select(Company).where(
+            Company.client_id == client_id,
+            Company.enrichment_status.in_(["pending", "failed"]),
+        )
+    )
+    companies = result.scalars().all()
+
+    for company in companies:
+        background_tasks.add_task(_bg_enrich_one, company.id, client_id)
+
+    logger.info(
+        "Bulk enrich queued",
+        extra={"client_id": client_id, "queued": len(companies)},
+    )
+    return {
+        "message": f"Queued {len(companies)} companies for enrichment",
+        "queued": len(companies),
+    }
+
+
+@router.post("/", response_model=CompanyResponse, status_code=201, summary="Create a company")
+async def create_company_endpoint(
+    data: CompanyCreate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> CompanyResponse:
+    # Domain uniqueness check
+    if data.domain:
+        existing = await get_company_by_domain(db, data.domain, client_id)
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A company with domain '{data.domain}' already exists for this client",
+            )
+
+    company = await create_company(db, data.model_dump(exclude_none=True), client_id)
+    resp = CompanyResponse.model_validate(company)
+    return resp
+
+
+@router.get("/{company_id}", response_model=CompanyDetailResponse, summary="Get company with linked leads")
+async def get_company_endpoint(
+    company_id: uuid.UUID,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> CompanyDetailResponse:
+    company = await get_company(db, company_id, client_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Fetch up to 10 linked leads (client_id scoped)
+    lead_result = await db.execute(
+        select(Lead)
+        .where(Lead.company_id == company_id, Lead.client_id == client_id)
+        .order_by(Lead.created_at.desc())
+        .limit(10)
+    )
+    leads = lead_result.scalars().all()
+    lead_responses = [LeadResponse.model_validate(lead) for lead in leads]
+
+    # Count total leads for this company
+    count_result = await db.execute(
+        select(func.count(Lead.id)).where(
+            Lead.company_id == company_id,
+            Lead.client_id == client_id,
+        )
+    )
+    lead_count = count_result.scalar_one()
+
+    resp = CompanyDetailResponse.model_validate(company)
+    resp = resp.model_copy(update={"lead_count": lead_count, "leads": lead_responses})
+    return resp
+
+
+@router.patch("/{company_id}", response_model=CompanyResponse, summary="Update a company")
+async def update_company_endpoint(
+    company_id: uuid.UUID,
+    data: CompanyUpdate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> CompanyResponse:
+    company = await get_company(db, company_id, client_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+    # enrichment_data is intentionally not in CompanyUpdate — enforced by schema
+
+    for key, value in update_data.items():
+        setattr(company, key, value)
+
+    await db.commit()
+    await db.refresh(company)
+
+    logger.info(
+        "Company updated",
+        extra={"company_id": str(company_id), "client_id": client_id},
+    )
+    resp = CompanyResponse.model_validate(company)
+    return resp
+
+
+@router.delete("/{company_id}", status_code=204, summary="Soft-delete a company")
+async def delete_company_endpoint(
+    company_id: uuid.UUID,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    deleted = await delete_company(db, company_id, client_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+
+@router.post("/{company_id}/enrich", status_code=202, summary="Trigger Apollo org enrichment")
+async def enrich_company_endpoint(
+    company_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    company = await get_company(db, company_id, client_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if company.enrichment_status == "enriching":
+        raise HTTPException(status_code=409, detail="Enrichment already in progress")
+
+    # Mark enriching immediately so concurrent calls get 409
+    company.enrichment_status = "enriching"
+    await db.commit()
+
+    background_tasks.add_task(_bg_enrich_company, company_id, client_id)
+
+    logger.info(
+        "Company enrichment queued",
+        extra={"company_id": str(company_id), "client_id": client_id},
+    )
+    return {
+        "message": "Enrichment started",
+        "company_id": str(company_id),
+        "status": "enriching",
+    }
+
+
+@router.post("/{company_id}/pull-contacts", status_code=202, summary="Pull Apollo contacts as leads")
+async def pull_contacts_endpoint(
+    company_id: uuid.UUID,
+    body: ContactPullRequest,
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    company = await get_company(db, company_id, client_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if not company.apollo_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Company must be enriched before pulling contacts",
+        )
+
+    background_tasks.add_task(
+        _bg_pull_contacts,
+        company_id,
+        client_id,
+        body.titles,
+        body.seniorities,
+        body.limit,
+    )
+
+    logger.info(
+        "Contact pull queued",
+        extra={"company_id": str(company_id), "client_id": client_id},
+    )
+    return {
+        "message": "Contact pull started",
+        "company_id": str(company_id),
+        "status": "processing",
+    }

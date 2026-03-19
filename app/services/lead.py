@@ -36,12 +36,37 @@ def _safe_enqueue(lead_id: int, client_id: int):
 SORTABLE_COLUMNS = {"id", "name", "email", "company", "source", "status", "score", "created_at", "updated_at"}
 
 
+async def _try_auto_link_company(db: AsyncSession, lead: Lead, client_id: int) -> None:
+    """After lead persist: try to find a matching Company by email domain and link it.
+
+    Failures are non-fatal — lead creation must never fail because of this.
+    """
+    try:
+        if lead.company_id is not None or not lead.email or "@" not in lead.email:
+            return
+        domain = lead.email.split("@", 1)[1].strip().lower()
+        if not domain:
+            return
+        # Import here to avoid a circular import at module load time
+        from app.services.company import get_company_by_domain
+        company = await get_company_by_domain(db, domain, client_id)
+        if company is not None:
+            lead.company_id = company.id
+            await db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Auto-link company lookup failed (non-fatal)",
+            extra={"lead_id": lead.id, "client_id": client_id, "error": str(exc)},
+        )
+
+
 async def create_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> Lead:
     lead = Lead(**data.model_dump(), client_id=client_id)
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
     await _safe_enqueue(lead.id, client_id)
+    await _try_auto_link_company(db, lead, client_id)
     return lead
 
 
@@ -187,6 +212,7 @@ async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tup
         await db.commit()
         await db.refresh(lead)
         await _safe_enqueue(lead.id, client_id)
+        await _try_auto_link_company(db, lead, client_id)
         return lead, "created"
 
     for key, value in data.model_dump(exclude_unset=True).items():
@@ -198,6 +224,7 @@ async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tup
             setattr(existing, key, value)
     await db.commit()
     await db.refresh(existing)
+    await _try_auto_link_company(db, existing, client_id)
     return existing, "updated"
 
 
