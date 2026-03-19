@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,19 +15,36 @@ router = APIRouter(prefix="/metrics", tags=["metrics"], dependencies=[Depends(re
 
 
 @router.get("")
-async def get_metrics(db: AsyncSession = Depends(get_db)):
+async def get_metrics(
+    db: AsyncSession = Depends(get_db),
+    client_id: int | None = Query(None, description="Filter metrics to a specific client"),
+):
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     last_24h = now - timedelta(hours=24)
 
-    # Leads created today (all clients; admin-only endpoint)
+    # Build base filters — optionally scoped to a single client
+    lead_filters = [Lead.created_at >= today_start]
+    routing_filters = [RoutingLog.created_at >= last_24h]
+    pending_filters = [Lead.enrichment_status.in_(["pending", "enriching"])]
+    enrich_max_filters = []
+    routing_max_filters = []
+
+    if client_id is not None:
+        lead_filters.append(Lead.client_id == client_id)
+        routing_filters.append(RoutingLog.client_id == client_id)
+        pending_filters.append(Lead.client_id == client_id)
+        enrich_max_filters.append(EnrichmentLog.client_id == client_id)
+        routing_max_filters.append(RoutingLog.client_id == client_id)
+
+    # Leads created today
     leads_today = (
         await db.execute(
-            select(func.count()).select_from(Lead).where(Lead.created_at >= today_start)
+            select(func.count()).select_from(Lead).where(*lead_filters)
         )
     ).scalar() or 0
 
-    # Redis queue depth
+    # Redis queue depth (global — not filterable by client)
     enrichment_queue_size = await redis.llen(QUEUE_KEY)
 
     # Routing stats over the last 24 h
@@ -39,16 +56,14 @@ async def get_metrics(db: AsyncSession = Depends(get_db)):
                 func.count().filter(RoutingLog.success.is_(False)).label("failed"),
             )
             .select_from(RoutingLog)
-            .where(RoutingLog.created_at >= last_24h)
+            .where(*routing_filters)
         )
     ).one()
 
-    # Leads currently pending/enriching (effectively "pending routing")
+    # Leads currently pending/enriching
     pending_count = (
         await db.execute(
-            select(func.count())
-            .select_from(Lead)
-            .where(Lead.enrichment_status.in_(["pending", "enriching"]))
+            select(func.count()).select_from(Lead).where(*pending_filters)
         )
     ).scalar() or 0
 
@@ -59,13 +74,15 @@ async def get_metrics(db: AsyncSession = Depends(get_db)):
     }
 
     # Timestamps of most recent activity
-    last_enrichment_at = (
-        await db.execute(select(func.max(EnrichmentLog.created_at)))
-    ).scalar()
+    enrich_max_q = select(func.max(EnrichmentLog.created_at))
+    if enrich_max_filters:
+        enrich_max_q = enrich_max_q.where(*enrich_max_filters)
+    last_enrichment_at = (await db.execute(enrich_max_q)).scalar()
 
-    last_routing_at = (
-        await db.execute(select(func.max(RoutingLog.created_at)))
-    ).scalar()
+    routing_max_q = select(func.max(RoutingLog.created_at))
+    if routing_max_filters:
+        routing_max_q = routing_max_q.where(*routing_max_filters)
+    last_routing_at = (await db.execute(routing_max_q)).scalar()
 
     uptime_seconds = round((now - APP_START_TIME).total_seconds())
 

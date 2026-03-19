@@ -91,7 +91,7 @@ async def get_dashboard_stats(
     ).where(Lead.client_id == client_id, Lead.score.isnot(None))
     score_row = (await db.execute(score_dist_q)).one()
     score_distribution = [
-        ScoreBucket(label=label, count=getattr(score_row, label))
+        ScoreBucket(label=label, count=score_row._mapping[label])
         for label, _, _ in buckets
     ]
 

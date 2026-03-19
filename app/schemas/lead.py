@@ -12,9 +12,7 @@ class LeadCreate(BaseModel):
     source: str | None = None
     apollo_id: str | None = None
     status: str = "new"
-    score: int | None = None
     enrichment_data: dict | None = None
-    enrichment_status: str = "pending"
 
 
 class LeadUpdate(BaseModel):

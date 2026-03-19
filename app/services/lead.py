@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from sqlalchemy import func, or_, select
@@ -8,6 +9,30 @@ from app.models.lead import Lead
 from app.schemas.lead import LeadCreate, LeadUpdate
 from app.services.enrichment.queue import enqueue_enrichment
 
+logger = logging.getLogger(__name__)
+
+
+def _safe_enqueue(lead_id: int, client_id: int):
+    """Return a coroutine that enqueues enrichment, swallowing Redis failures.
+
+    The lead is already persisted when this is called. A Redis outage must not
+    crash the request — the lead can be enriched manually via /enrich.
+    """
+    import asyncio
+
+    async def _enqueue():
+        try:
+            await enqueue_enrichment(lead_id, client_id)
+        except Exception as exc:
+            logger.error(
+                "Failed to enqueue enrichment for lead %d — lead created but enrichment not queued: %s",
+                lead_id,
+                exc,
+                extra={"lead_id": lead_id, "client_id": client_id},
+            )
+
+    return _enqueue()
+
 SORTABLE_COLUMNS = {"id", "name", "email", "company", "source", "status", "score", "created_at", "updated_at"}
 
 
@@ -16,7 +41,7 @@ async def create_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> Lea
     db.add(lead)
     await db.commit()
     await db.refresh(lead)
-    await enqueue_enrichment(lead.id, client_id)
+    await _safe_enqueue(lead.id, client_id)
     return lead
 
 
@@ -102,15 +127,6 @@ async def delete_lead(db: AsyncSession, lead_id: int, client_id: int) -> bool:
     return True
 
 
-async def bulk_create_leads(db: AsyncSession, leads_data: list[LeadCreate], client_id: int) -> list[Lead]:
-    leads = [Lead(**data.model_dump(), client_id=client_id) for data in leads_data]
-    db.add_all(leads)
-    await db.commit()
-    for lead in leads:
-        await db.refresh(lead)
-    return leads
-
-
 async def get_lead_with_logs(db: AsyncSession, lead_id: int, client_id: int) -> Lead | None:
     result = await db.execute(
         select(Lead)
@@ -170,7 +186,7 @@ async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tup
         db.add(lead)
         await db.commit()
         await db.refresh(lead)
-        await enqueue_enrichment(lead.id, client_id)
+        await _safe_enqueue(lead.id, client_id)
         return lead, "created"
 
     for key, value in data.model_dump(exclude_unset=True).items():
@@ -230,6 +246,6 @@ async def bulk_upsert_leads(
     await db.commit()
 
     for lead in new_leads:
-        await enqueue_enrichment(lead.id, client_id)
+        await _safe_enqueue(lead.id, client_id)
 
     return {"created": created, "updated": updated, "skipped": skipped}

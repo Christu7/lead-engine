@@ -17,6 +17,9 @@ logger = logging.getLogger("worker")
 
 shutdown = asyncio.Event()
 
+# Tasks moved here atomically via RPOPLPUSH; removed after completion
+IN_PROGRESS_KEY = f"{QUEUE_KEY}:processing"
+
 
 def _handle_signal() -> None:
     logger.info("Shutdown signal received")
@@ -68,26 +71,55 @@ async def process_task(payload: dict) -> None:
         )
 
 
+async def recover_stranded_tasks() -> None:
+    """On startup, requeue any tasks that were in-progress when the worker crashed.
+
+    Tasks moved to IN_PROGRESS_KEY via RPOPLPUSH but never removed (because the
+    worker crashed) are recovered here by pushing them back onto QUEUE_KEY.
+    """
+    stranded: list[bytes] = []
+    while True:
+        item = await redis.rpoplpush(IN_PROGRESS_KEY, QUEUE_KEY)
+        if item is None:
+            break
+        stranded.append(item)
+
+    if stranded:
+        logger.warning(
+            "Recovered %d stranded task(s) from previous worker crash",
+            len(stranded),
+            extra={"count": len(stranded)},
+        )
+
+
 async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
 
+    await recover_stranded_tasks()
+
     logger.info("Worker started, waiting for tasks on '%s'", QUEUE_KEY)
 
     while not shutdown.is_set():
-        result = await redis.brpop(QUEUE_KEY, timeout=1)
-        if result is None:
+        # Atomically move from queue to in-progress list so a crash doesn't lose the task
+        raw = await redis.brpoplpush(QUEUE_KEY, IN_PROGRESS_KEY, timeout=1)
+        if raw is None:
             continue
 
-        _, raw = result
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             logger.error("Invalid payload: %s", raw)
+            # Remove the invalid item from in-progress
+            await redis.lrem(IN_PROGRESS_KEY, 1, raw)
             continue
 
-        await process_task(payload)
+        try:
+            await process_task(payload)
+        finally:
+            # Remove from in-progress regardless of success or failure
+            await redis.lrem(IN_PROGRESS_KEY, 1, raw)
 
     logger.info("Worker shutting down")
 

@@ -107,6 +107,15 @@ async def route_lead(
             destination, client_id,
             extra={"lead_id": lead.id, "client_id": client_id, "destination": destination},
         )
+        db.add(RoutingLog(
+            client_id=client_id,
+            lead_id=lead.id,
+            destination=destination,
+            payload=None,
+            response_code=None,
+            success=False,
+            error="No webhook URL configured",
+        ))
         return RoutingResult(
             destination=destination,
             status="no_config",

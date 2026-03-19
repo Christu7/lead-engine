@@ -193,8 +193,30 @@ class EnrichmentPipeline:
 
             await score_lead(db, lead, client_id)
             await route_lead(db, lead, client_id)
-        except Exception:
+        except Exception as exc:
             lead.enrichment_status = "failed"
+            logger.exception(
+                "Enrichment: unexpected error for lead %d",
+                lead_id,
+                extra={"lead_id": lead_id, "client_id": client_id},
+            )
+            try:
+                from app.core.redis import redis
+                from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+                dl_svc = DeadLetterService(redis)
+                await dl_svc.push(
+                    DeadLetterType.ENRICHMENT,
+                    lead_id=lead_id,
+                    client_id=client_id,
+                    error=f"Unexpected pipeline error: {exc}",
+                )
+            except Exception as dl_exc:
+                logger.error(
+                    "Enrichment: failed to write dead letter for lead %d: %s",
+                    lead_id,
+                    dl_exc,
+                )
             raise
         finally:
             await db.commit()

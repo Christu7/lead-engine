@@ -1,5 +1,6 @@
 import httpx
 
+from app.core.exceptions import EnrichmentProviderError
 from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
 
 
@@ -56,9 +57,10 @@ class ApolloProvider(EnrichmentProvider):
                 data=data,
                 raw_response=body,
             )
-        except httpx.HTTPError as e:
-            return EnrichmentResult(
-                provider_name=self.provider_name,
-                success=False,
-                error=str(e),
-            )
+        except httpx.HTTPError as exc:
+            raise EnrichmentProviderError(
+                provider=self.provider_name,
+                lead_id=lead.id,
+                reason=str(exc),
+                cause=exc,
+            ) from exc

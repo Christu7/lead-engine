@@ -55,13 +55,15 @@ class AIEnrichmentService:
             data["company_description"] = apollo["company_description"]
 
         # Clearbit data (fills gaps not already set by Apollo)
-        cb_company = enrichment.get("clearbit", {}).get("company", {})
-        if cb_company.get("description"):
-            data.setdefault("company_description", cb_company["description"])
-        if cb_company.get("employees"):
-            data.setdefault("company_size", cb_company["employees"])
-        if cb_company.get("industry"):
-            data.setdefault("industry", cb_company["industry"])
+        # Clearbit stores a flat dict under enrichment_data["clearbit"] with keys:
+        # company_name, industry, sector, employee_count, revenue, description
+        clearbit = enrichment.get("clearbit", {})
+        if clearbit.get("description"):
+            data.setdefault("company_description", clearbit["description"])
+        if clearbit.get("employee_count"):
+            data.setdefault("company_size", clearbit["employee_count"])
+        if clearbit.get("industry"):
+            data.setdefault("industry", clearbit["industry"])
 
         # Proxycurl / LinkedIn data
         proxycurl = enrichment.get("proxycurl", {})
@@ -217,6 +219,35 @@ async def run_analysis_for_lead(lead_id: int, client_id: int) -> None:
                     lead_id=lead_id,
                     client_id=client_id,
                     error=str(exc),
+                )
+            except Exception as dl_exc:
+                logger.error(
+                    "AI analysis: failed to write dead letter for lead %d: %s",
+                    lead_id,
+                    dl_exc,
+                )
+
+        except Exception as exc:
+            # Unexpected error (DB failure, OOM, etc.) — must still mark lead as failed
+            # so it doesn't stay stuck in "analyzing" forever
+            duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            logger.exception(
+                "AI analysis: unexpected error for lead %d",
+                lead_id,
+                extra={"lead_id": lead_id, "client_id": client_id, "duration_ms": duration_ms},
+            )
+            lead.ai_status = "failed"
+            try:
+                await db.commit()
+            except Exception:
+                pass
+            try:
+                dl_svc = DeadLetterService(redis)
+                await dl_svc.push(
+                    DeadLetterType.AI_ANALYSIS,
+                    lead_id=lead_id,
+                    client_id=client_id,
+                    error=f"Unexpected error: {exc}",
                 )
             except Exception as dl_exc:
                 logger.error(
