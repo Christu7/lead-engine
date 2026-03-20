@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     BACKEND_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
     APOLLO_WEBHOOK_SECRET: str = ""
+    TYPEFORM_WEBHOOK_SECRET: str = ""   # Optional: verify X-Typeform-Signature if set
+    WEBSITE_WEBHOOK_SECRET: str = ""    # Optional: verify X-Webhook-Signature if set
     APOLLO_API_KEY: str = ""
     ADMIN_EMAIL: str = "admin@leadengine.local"
     ADMIN_PASSWORD: str = "changeme"

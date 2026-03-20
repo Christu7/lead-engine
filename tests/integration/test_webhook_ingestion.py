@@ -139,7 +139,7 @@ class TestTypeformWebhook:
         )
         leads = result.scalars().all()
         # typeform creates, not upserts → two rows
-        assert len(leads) >= 1
+        assert len(leads) == 2
 
 
 # ---------------------------------------------------------------------------

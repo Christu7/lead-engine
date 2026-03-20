@@ -115,11 +115,31 @@ async def get_enrichment_settings(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     enrichment = (client.settings or {}).get("enrichment", {})
-    # Mask keys — only the last 4 characters are revealed
+
+    # Merge with ApiKeyStore so the UI reflects globally-configured keys even when
+    # the client has no per-client override. If a global key is configured but no
+    # client-level key exists, show "****(global)" as the masked value.
+    global_keys = {item["key_name"]: item for item in await store_svc.list_keys(db)}
+    _PROVIDER_KEY_MAP = {
+        "apollo_api_key": "apollo",
+        "clearbit_api_key": "clearbit",
+        "proxycurl_api_key": "proxycurl",
+    }
+
+    def _resolve(settings_field: str) -> str | None:
+        client_val = enrichment.get(settings_field)
+        if client_val:
+            return _mask_key(client_val)
+        store_name = _PROVIDER_KEY_MAP.get(settings_field)
+        global_entry = global_keys.get(store_name) if store_name else None
+        if global_entry and global_entry.get("is_set") and global_entry.get("is_active"):
+            return "****(global)"
+        return None
+
     return EnrichmentSettingsResponse(
-        apollo_api_key=_mask_key(enrichment.get("apollo_api_key")),
-        clearbit_api_key=_mask_key(enrichment.get("clearbit_api_key")),
-        proxycurl_api_key=_mask_key(enrichment.get("proxycurl_api_key")),
+        apollo_api_key=_resolve("apollo_api_key"),
+        clearbit_api_key=_resolve("clearbit_api_key"),
+        proxycurl_api_key=_resolve("proxycurl_api_key"),
     )
 
 

@@ -32,8 +32,11 @@ async def get_key(db: AsyncSession, key_name: str) -> str | None:
     try:
         return decrypt(record.key_value)
     except Exception:
-        logger.error(
-            "api_key_store: failed to decrypt key — may be encrypted with a different key",
+        logger.warning(
+            "ENCRYPTION_KEY_MISMATCH: failed to decrypt key '%s' — "
+            "the stored value was likely encrypted with a different ENCRYPTION_KEY. "
+            "Re-save the key via the admin UI to re-encrypt it with the current key.",
+            key_name,
             extra={"key_name": key_name},
         )
         return None

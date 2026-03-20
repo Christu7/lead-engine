@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.core.deps import require_admin
 from app.core.redis import redis as redis_client
 from app.core.security import hash_password
+from app.models.client import Client
 from app.models.user import User, UserClient
 from app.schemas.admin import AdminCreateUser, AdminUserResponse, AssignClientRequest
 from app.services.ai_enrichment import run_analysis_for_lead
@@ -46,6 +47,10 @@ async def assign_client(user_id: int, body: AssignClientRequest, db: AsyncSessio
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+
+    client_result = await db.execute(select(Client).where(Client.id == body.client_id))
+    if client_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Client not found")
 
     existing = await db.execute(
         select(UserClient).where(

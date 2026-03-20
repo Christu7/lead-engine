@@ -1,13 +1,17 @@
 import csv
 import io
+import uuid
 from datetime import datetime
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user
+from app.schemas.export import ExportRequest, WebhookExportRequest, WebhookExportResponse
+from app.services import export as export_service
 from app.services.ai_enrichment import run_analysis_for_lead
 from app.schemas.lead import (
     BulkImportResponse,
@@ -119,6 +123,68 @@ async def bulk_import(
         skipped=counts["skipped"],
         failed=len(errors),
         errors=errors,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Export endpoints — must be registered before /{lead_id} catch-all routes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/export/csv", status_code=200)
+async def export_leads_csv(
+    request: ExportRequest,
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export filtered leads as a CSV file (max 10,000 rows)."""
+    csv_text, row_count = await export_service.generate_csv(db, client_id, request)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"leads_export_{timestamp}.csv"
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Export-Count": str(row_count),
+        },
+    )
+
+
+@router.post("/export/webhook", response_model=WebhookExportResponse, status_code=202)
+async def export_leads_webhook(
+    request: WebhookExportRequest,
+    background_tasks: BackgroundTasks,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dispatch filtered leads to a webhook URL in batches. Returns 202 immediately."""
+    total_leads = await export_service.count_export_leads(db, client_id, request.filters)
+    total_batches = max(1, -(-total_leads // request.batch_size))  # ceiling division
+    export_id = str(uuid.uuid4())
+
+    background_tasks.add_task(
+        export_service.dispatch_webhook_export,
+        webhook_url=request.webhook_url,
+        client_id=client_id,
+        filters=request.filters,
+        batch_size=request.batch_size,
+        include_enrichment=request.include_enrichment,
+        include_ai_analysis=request.include_ai_analysis,
+        export_id=export_id,
+    )
+
+    # Mask the webhook URL — expose only the domain for the response
+    parsed = urlparse(request.webhook_url)
+    masked_url = f"https://{parsed.netloc}"
+
+    return WebhookExportResponse(
+        export_id=export_id,
+        total_leads=total_leads,
+        total_batches=total_batches,
+        status="dispatched",
+        webhook_url=masked_url,
     )
 
 

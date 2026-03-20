@@ -77,12 +77,20 @@ async def recover_stranded_tasks() -> None:
     Tasks moved to IN_PROGRESS_KEY via RPOPLPUSH but never removed (because the
     worker crashed) are recovered here by pushing them back onto QUEUE_KEY.
     """
+    _RECOVER_LIMIT = 1000
     stranded: list[bytes] = []
-    while True:
+    while len(stranded) < _RECOVER_LIMIT:
         item = await redis.rpoplpush(IN_PROGRESS_KEY, QUEUE_KEY)
         if item is None:
             break
         stranded.append(item)
+
+    if len(stranded) >= _RECOVER_LIMIT:
+        logger.warning(
+            "recover_stranded_tasks: hit limit of %d — in-progress queue may have more items",
+            _RECOVER_LIMIT,
+            extra={"limit": _RECOVER_LIMIT},
+        )
 
     if stranded:
         logger.warning(

@@ -31,6 +31,19 @@ class ApolloProvider(EnrichmentProvider):
                         no_data=True,
                     )
 
+                if resp.status_code == 429:
+                    # Apollo is rate-limiting us at the API level (distinct from our
+                    # internal Redis rate limiter). Return a rate_limited result so the
+                    # pipeline can log at WARNING rather than ERROR and skip dead-lettering.
+                    return EnrichmentResult(
+                        provider_name=self.provider_name,
+                        success=False,
+                        data={},
+                        raw_response=None,
+                        error="Apollo API rate limit exceeded (HTTP 429)",
+                        rate_limited=True,
+                    )
+
                 resp.raise_for_status()
                 body = resp.json()
 

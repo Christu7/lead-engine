@@ -168,7 +168,10 @@ class TestRouteLeadFailures:
         respx.post(GHL_INBOUND).mock(return_value=httpx.Response(500, text="error"))
 
         mock_dl_push = AsyncMock()
-        with patch("app.services.dead_letter.DeadLetterService.push", mock_dl_push):
+        with (
+            patch("app.services.dead_letter.DeadLetterService.push", mock_dl_push),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
             result = await route_lead(db, lead, 1)
 
         assert result.status == "failed"
@@ -183,7 +186,10 @@ class TestRouteLeadFailures:
         respx.post(GHL_INBOUND).mock(side_effect=httpx.TimeoutException("timeout"))
 
         mock_dl_push = AsyncMock()
-        with patch("app.services.dead_letter.DeadLetterService.push", mock_dl_push):
+        with (
+            patch("app.services.dead_letter.DeadLetterService.push", mock_dl_push),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
             result = await route_lead(db, lead, 1)
 
         assert result.status == "failed"
@@ -202,7 +208,10 @@ class TestRouteLeadFailures:
             httpx.Response(200),
         ]
 
-        with patch("app.services.dead_letter.DeadLetterService.push", AsyncMock()):
+        with (
+            patch("app.services.dead_letter.DeadLetterService.push", AsyncMock()),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
             result = await route_lead(db, lead, 1)
 
         assert result.status == "routed"
@@ -215,7 +224,10 @@ class TestRouteLeadFailures:
 
         respx.post(GHL_INBOUND).mock(return_value=httpx.Response(200))
 
-        with patch("app.services.dead_letter.DeadLetterService.push", AsyncMock()):
+        with (
+            patch("app.services.dead_letter.DeadLetterService.push", AsyncMock()),
+            patch("asyncio.sleep", AsyncMock()),
+        ):
             await route_lead(db, lead, 1)
 
         db.add.assert_called_once()

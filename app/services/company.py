@@ -181,43 +181,6 @@ async def delete_company(
     return True
 
 
-# ---------------------------------------------------------------------------
-# Lead linking
-# ---------------------------------------------------------------------------
-
-
-async def link_lead_to_company(
-    db: AsyncSession,
-    lead_id: int,
-    company_id: uuid.UUID,
-    client_id: int,
-) -> Lead:
-    """Link a lead to a company. Both must belong to client_id."""
-    lead_result = await db.execute(
-        select(Lead).where(Lead.id == lead_id, Lead.client_id == client_id)
-    )
-    lead = lead_result.scalar_one_or_none()
-    if lead is None:
-        raise ValueError(f"Lead {lead_id} not found for client {client_id}")
-
-    company = await get_company(db, company_id, client_id)
-    if company is None:
-        raise ValueError(f"Company {company_id} not found for client {client_id}")
-
-    lead.company_id = company_id
-    await db.commit()
-    await db.refresh(lead)
-    logger.info(
-        "Lead linked to company",
-        extra={
-            "lead_id": lead_id,
-            "company_id": str(company_id),
-            "client_id": client_id,
-        },
-    )
-    return lead
-
-
 async def auto_link_leads_by_domain(
     db: AsyncSession, company: Company, client_id: int
 ) -> None:

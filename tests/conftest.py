@@ -189,15 +189,49 @@ def admin_token() -> str:
 
 
 @pytest_asyncio.fixture
-async def authenticated_client(http_client, member_token):
-    """HTTP client authenticated as a member user."""
+async def seeded_users(db_session, seeded_client):
+    """Insert a member (id=1) and admin (id=2) user, both linked to seeded_client.
+
+    TRUNCATE RESTART IDENTITY guarantees the first-inserted user gets id=1 and the
+    second gets id=2, which matches the hardcoded values in member_token/admin_token.
+    """
+    from app.core.security import hash_password
+    from app.models.user import User, UserClient
+
+    member = User(
+        email="member@test.com",
+        hashed_password=hash_password("test"),
+        role="member",
+        is_active=True,
+    )
+    admin = User(
+        email="admin@test.com",
+        hashed_password=hash_password("test"),
+        role="admin",
+        is_active=True,
+    )
+    db_session.add_all([member, admin])
+    await db_session.commit()
+    await db_session.refresh(member)
+    await db_session.refresh(admin)
+    db_session.add_all([
+        UserClient(user_id=member.id, client_id=seeded_client.id),
+        UserClient(user_id=admin.id, client_id=seeded_client.id),
+    ])
+    await db_session.commit()
+    return {"member": member, "admin": admin}
+
+
+@pytest_asyncio.fixture
+async def authenticated_client(http_client, member_token, seeded_users):
+    """HTTP client authenticated as a member user (user row seeded in DB)."""
     http_client.headers.update(_auth_headers(member_token))
     return http_client
 
 
 @pytest_asyncio.fixture
-async def admin_client(http_client, admin_token):
-    """HTTP client authenticated as an admin user."""
+async def admin_client(http_client, admin_token, seeded_users):
+    """HTTP client authenticated as an admin user (user row seeded in DB)."""
     http_client.headers.update(_auth_headers(admin_token))
     return http_client
 

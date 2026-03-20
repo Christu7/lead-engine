@@ -136,6 +136,25 @@ class EnrichmentPipeline:
                         ))
                         continue
 
+                    # Provider-level rate limiting (HTTP 429) — log at WARNING, no dead-letter,
+                    # treat the same as our internal rate-limiter (deferred, not failed).
+                    if result.rate_limited:
+                        logger.warning(
+                            "Enrichment: %s returned HTTP 429 for lead %d — deferring",
+                            name,
+                            lead_id,
+                            extra={"lead_id": lead_id, "provider": name, "client_id": client_id},
+                        )
+                        providers_rate_limited += 1
+                        db.add(EnrichmentLog(
+                            lead_id=lead_id,
+                            client_id=client_id,
+                            provider=name,
+                            success=False,
+                            raw_response={"error": result.error},
+                        ))
+                        continue
+
                     # Cache successful results (keyed by client_id)
                     if result.success and result.data and cache_key:
                         await set_cached(name, client_id, cache_key, result.data)

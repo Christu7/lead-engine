@@ -73,6 +73,14 @@ class DeadLetterService:
                     logger.warning(
                         "Dead letter entry %s has invalid JSON — skipping", eid
                     )
+            else:
+                # Entry has expired (TTL elapsed) but the index still holds its ID.
+                # Clean up the orphaned reference so the index stays accurate.
+                try:
+                    await self._redis.zrem(DL_INDEX_KEY, eid)
+                    logger.debug("Dead letter index: removed expired entry %s", eid)
+                except Exception:
+                    pass
         return entries
 
     async def get(self, entry_id: str) -> dict | None:

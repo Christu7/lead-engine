@@ -60,3 +60,31 @@ export interface LeadListResponse {
   limit: number;
   offset: number;
 }
+
+// ── Export types ──────────────────────────────────────────────────────────────
+
+export interface LeadFiltersExport {
+  source?: string;
+  status?: string;
+  score_min?: number;
+  score_max?: number;
+  date_from?: string;
+  date_to?: string;
+  search?: string;
+}
+
+export interface WebhookExportRequest {
+  webhook_url: string;
+  filters?: LeadFiltersExport;
+  batch_size?: number;
+  include_enrichment?: boolean;
+  include_ai_analysis?: boolean;
+}
+
+export interface WebhookExportResponse {
+  export_id: string;
+  total_leads: number;
+  total_batches: number;
+  status: string;
+  webhook_url: string;
+}

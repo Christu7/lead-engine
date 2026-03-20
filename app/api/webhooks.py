@@ -30,7 +30,11 @@ async def apollo_webhook(
 ):
     body = await request.body()
 
-    # Signature verification is mandatory — no secret means the endpoint is misconfigured
+    # Signature verification is mandatory — no secret means the endpoint is misconfigured.
+    # NOTE: APOLLO_WEBHOOK_SECRET is a single global value shared across all clients.
+    # Apollo does not support per-webhook secrets, so any client whose API key reaches
+    # this endpoint gets the same signature validation. A per-client secret would require
+    # Apollo to support dynamic secrets or routing through separate webhook URLs.
     if not settings.APOLLO_WEBHOOK_SECRET:
         raise HTTPException(
             status_code=500,
@@ -76,8 +80,17 @@ async def typeform_webhook(
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
+    body = await request.body()
+
+    # Optional HMAC signature verification — enabled when TYPEFORM_WEBHOOK_SECRET is set.
+    # Typeform sends the signature in the X-Typeform-Signature header as "sha256=<hex>".
+    if settings.TYPEFORM_WEBHOOK_SECRET:
+        sig = request.headers.get("x-typeform-signature", "")
+        if not sig or not _verify_apollo_signature(body, sig, settings.TYPEFORM_WEBHOOK_SECRET):
+            raise HTTPException(status_code=401, detail="Invalid Typeform webhook signature")
+
     try:
-        raw_payload = await request.json()
+        raw_payload = json.loads(body)
     except Exception:
         raise HTTPException(status_code=422, detail="Invalid JSON payload")
 
@@ -102,8 +115,17 @@ async def website_webhook(
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
+    body = await request.body()
+
+    # Optional HMAC signature verification — enabled when WEBSITE_WEBHOOK_SECRET is set.
+    # Callers must include the signature in X-Webhook-Signature as "sha256=<hex>".
+    if settings.WEBSITE_WEBHOOK_SECRET:
+        sig = request.headers.get("x-webhook-signature", "")
+        if not sig or not _verify_apollo_signature(body, sig, settings.WEBSITE_WEBHOOK_SECRET):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
     try:
-        raw_payload = await request.json()
+        raw_payload = json.loads(body)
     except Exception:
         raise HTTPException(status_code=422, detail="Invalid JSON payload")
 

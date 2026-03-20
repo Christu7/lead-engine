@@ -34,7 +34,7 @@ async def seed() -> None:
         else:
             print(f"Client already exists: {settings.DEFAULT_CLIENT_NAME} (id={client.id})")
 
-        # 2. Ensure admin user exists
+        # 2. Ensure admin user exists with correct role
         result = await db.execute(select(User).where(User.email == settings.ADMIN_EMAIL))
         user = result.scalar_one_or_none()
         if user is None:
@@ -42,12 +42,21 @@ async def seed() -> None:
                 email=settings.ADMIN_EMAIL,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
                 role="admin",
+                is_active=True,
             )
             db.add(user)
             await db.flush()
             print(f"Created admin user: {settings.ADMIN_EMAIL} (id={user.id})")
         else:
-            print(f"Admin user already exists: {settings.ADMIN_EMAIL} (id={user.id})")
+            # Always ensure role=admin and is_active=True even if the user was
+            # pre-created with a different role (e.g. via the API with role=member).
+            # Without this, seed.py is not idempotent and leaves the admin broken.
+            if user.role != "admin" or not user.is_active:
+                user.role = "admin"
+                user.is_active = True
+                print(f"Updated admin user role/status: {settings.ADMIN_EMAIL} (id={user.id})")
+            else:
+                print(f"Admin user already exists: {settings.ADMIN_EMAIL} (id={user.id})")
 
         # 3. Ensure admin is assigned to default client
         result = await db.execute(

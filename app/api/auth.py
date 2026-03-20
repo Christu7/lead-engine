@@ -143,5 +143,11 @@ async def google_callback(request: Request, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Account is disabled")
     active_client_id = await get_default_client_id(db, user.id, user.role)
     jwt_token = _issue_token(user, active_client_id)
-    # Use URL fragment (#token=) so the JWT never reaches the server in logs or referrer headers
+    # Use URL fragment (#token=) so the JWT never reaches the server in logs or referrer headers.
+    # SECURITY NOTE: URL fragments are readable by JavaScript executing on the page, so any
+    # third-party script (analytics, ads, error tracking) loaded before the fragment is consumed
+    # could exfiltrate the token. The proper fix is PKCE (RFC 7636): the frontend generates a
+    # code_verifier, the backend stores a short-lived code and exchanges it for a token via a
+    # POST request that never touches the URL. Until PKCE is implemented, minimize third-party
+    # scripts on the /auth/callback page and consume the fragment immediately on load.
     return RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/callback#token={jwt_token}")
