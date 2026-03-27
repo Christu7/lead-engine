@@ -158,6 +158,12 @@ class ApolloCompanyEnrichmentService:
             company.location_country = org["country"]
         if org.get("id"):
             company.apollo_id = org["id"]
+        else:
+            logger.warning(
+                "Apollo org enrichment: response has no organization.id — "
+                "contact pull will not be available for this company",
+                extra={"company_id": str(company.id), "client_id": client_id},
+            )
         if org.get("funding_stage"):
             company.funding_stage = org["funding_stage"]
         if org.get("annual_revenue_printed"):
@@ -211,7 +217,7 @@ class ApolloCompanyEnrichmentService:
         """
         if not company.apollo_id:
             raise ValueError(
-                f"Company {company.id} has no apollo_id — enrich it first before pulling contacts"
+                f"Company must be enriched first (apollo_id is missing) — company_id={company.id}"
             )
 
         start = time.monotonic()
@@ -232,7 +238,7 @@ class ApolloCompanyEnrichmentService:
             headers = await _apollo_headers(db)
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
-                    "https://api.apollo.io/v1/mixed_people/search",
+                    "https://api.apollo.io/v1/mixed_people/api_search",
                     headers=headers,
                     json=payload,
                 )
