@@ -48,9 +48,9 @@ async def get_company_by_domain(
         select(Company).where(
             Company.domain == normalized,
             Company.client_id == client_id,
-        )
+        ).limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_company_by_apollo_id(
@@ -60,9 +60,9 @@ async def get_company_by_apollo_id(
         select(Company).where(
             Company.apollo_id == apollo_id,
             Company.client_id == client_id,
-        )
+        ).limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_company_by_name(
@@ -72,9 +72,9 @@ async def get_company_by_name(
         select(Company).where(
             func.lower(Company.name) == name.lower(),
             Company.client_id == client_id,
-        )
+        ).limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 # ---------------------------------------------------------------------------
