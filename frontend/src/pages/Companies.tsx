@@ -6,7 +6,7 @@ import {
   useReactTable,
   type RowSelectionState,
 } from "@tanstack/react-table";
-import { bulkEnrichCompanies, enrichCompany, getCompanies } from "../api/companies";
+import { bulkEnrichCompanies, enrichCompany, getCompanies, pullContacts } from "../api/companies";
 import type { Company } from "../types/company";
 import CompanyDetailPanel from "../components/companies/CompanyDetailPanel";
 import AddCompanyModal from "../components/companies/AddCompanyModal";
@@ -90,6 +90,14 @@ export default function Companies() {
   const [toast, setToast] = useState<string | null>(null);
   const [bulkEnriching, setBulkEnriching] = useState(false);
   const [enrichingSelected, setEnrichingSelected] = useState(false);
+
+  // Pull Contacts state
+  const [showPullPopover, setShowPullPopover] = useState(false);
+  const [pullSeniorities, setPullSeniorities] = useState<string[]>(["vp", "director", "c_suite"]);
+  const [pullTitles, setPullTitles] = useState("");
+  const [pullLimit, setPullLimit] = useState(25);
+  const [pullingContacts, setPullingContacts] = useState(false);
+  const [pullProgress, setPullProgress] = useState("");
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -251,6 +259,50 @@ export default function Companies() {
     fetchCompanies();
   };
 
+  // Derive enriched/unenriched split from current selection
+  const selectedCompanies = useMemo(
+    () => selectedIds.map((id) => companies.find((c) => c.id === id)).filter(Boolean) as typeof companies,
+    [selectedIds, companies],
+  );
+  const enrichedSelectedIds = selectedCompanies
+    .filter((c) => c.enrichment_status === "enriched")
+    .map((c) => c.id);
+  const unenrichedCount = selectedCompanies.length - enrichedSelectedIds.length;
+
+  const handlePullContacts = async () => {
+    setShowPullPopover(false);
+    setPullingContacts(true);
+    const titles = pullTitles
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    let ok = 0;
+    for (let i = 0; i < enrichedSelectedIds.length; i++) {
+      setPullProgress(`Pulling contacts from company ${i + 1} of ${enrichedSelectedIds.length}…`);
+      try {
+        await pullContacts(enrichedSelectedIds[i], { titles, seniorities: pullSeniorities, limit: pullLimit });
+        ok++;
+      } catch {
+        // individual failure — continue others
+      }
+    }
+    setPullingContacts(false);
+    setPullProgress("");
+    setRowSelection({});
+    showToast(`Pulled contacts from ${ok} of ${enrichedSelectedIds.length} companies`);
+    fetchCompanies();
+  };
+
+  const SENIORITY_OPTIONS = [
+    { value: "owner", label: "Owner" },
+    { value: "founder", label: "Founder" },
+    { value: "c_suite", label: "C-Suite" },
+    { value: "vp", label: "VP" },
+    { value: "director", label: "Director" },
+    { value: "manager", label: "Manager" },
+    { value: "senior", label: "Senior" },
+  ];
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-gray-900">Companies</h1>
@@ -293,15 +345,116 @@ export default function Companies() {
         </select>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Pull progress text */}
+          {pullingContacts && (
+            <span className="text-xs text-gray-500">{pullProgress}</span>
+          )}
+
           {selectedIds.length > 0 && (
             <button
               onClick={handleEnrichSelected}
-              disabled={enrichingSelected}
+              disabled={enrichingSelected || pullingContacts}
               className="rounded-md bg-yellow-500 px-3 py-2 text-sm font-medium text-white hover:bg-yellow-600 disabled:opacity-50"
             >
               {enrichingSelected ? "Queuing…" : `Enrich Selected (${selectedIds.length})`}
             </button>
           )}
+
+          {/* Pull Contacts button + popover */}
+          {selectedIds.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setShowPullPopover((v) => !v)}
+                disabled={pullingContacts || enrichingSelected}
+                className="rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+              >
+                {pullingContacts ? pullProgress || "Pulling…" : `Pull Contacts (${selectedIds.length})`}
+              </button>
+
+              {showPullPopover && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-lg border border-gray-200 bg-white p-4 shadow-lg">
+                  <p className="mb-3 text-sm font-semibold text-gray-900">Pull Contacts Options</p>
+
+                  {/* Seniority */}
+                  <div className="mb-3">
+                    <p className="mb-1.5 text-xs font-medium text-gray-700">Seniority</p>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                      {SENIORITY_OPTIONS.map((opt) => (
+                        <label key={opt.value} className="flex items-center gap-1.5 text-xs text-gray-700">
+                          <input
+                            type="checkbox"
+                            checked={pullSeniorities.includes(opt.value)}
+                            onChange={(e) =>
+                              setPullSeniorities((prev) =>
+                                e.target.checked
+                                  ? [...prev, opt.value]
+                                  : prev.filter((s) => s !== opt.value),
+                              )
+                            }
+                            className="rounded border-gray-300"
+                          />
+                          {opt.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Titles */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Titles (optional, comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullTitles}
+                      onChange={(e) => setPullTitles(e.target.value)}
+                      placeholder="CEO, Head of IT, Digital Transformation"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Limit */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Limit per company (max 100)
+                    </label>
+                    <input
+                      type="number"
+                      value={pullLimit}
+                      min={1}
+                      max={100}
+                      onChange={(e) => setPullLimit(Math.min(100, Math.max(1, Number(e.target.value))))}
+                      className="w-24 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Warning for unenriched */}
+                  {unenrichedCount > 0 && (
+                    <p className="mb-3 rounded-md bg-yellow-50 px-2.5 py-1.5 text-xs text-yellow-700">
+                      ⚠ {unenrichedCount} {unenrichedCount === 1 ? "company" : "companies"} will be skipped (not yet enriched)
+                    </p>
+                  )}
+
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setShowPullPopover(false)}
+                      className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handlePullContacts}
+                      disabled={enrichedSelectedIds.length === 0}
+                      className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      Pull from {enrichedSelectedIds.length} {enrichedSelectedIds.length === 1 ? "company" : "companies"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <button
             onClick={handleBulkEnrich}
             disabled={bulkEnriching}
