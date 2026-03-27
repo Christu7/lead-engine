@@ -281,9 +281,21 @@ class ApolloCompanyEnrichmentService:
                 cause=exc,
             ) from exc
 
-        people = body.get("people") or []
+        # api_search may return results under "people" or "contacts" depending on plan/version
+        people = body.get("people") or body.get("contacts") or []
         pagination = body.get("pagination") or {}
-        total_found = pagination.get("total_entries", 0)
+        total_found = pagination.get("total_entries", len(people))
+
+        logger.info(
+            "Apollo contact pull response received",
+            extra={
+                "company_id": str(company.id),
+                "client_id": client_id,
+                "response_keys": list(body.keys()),
+                "people_count": len(people),
+                "total_entries": total_found,
+            },
+        )
 
         created_count = 0
         updated_count = 0

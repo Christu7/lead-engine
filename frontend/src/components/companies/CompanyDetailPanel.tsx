@@ -240,6 +240,10 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
                 <dd className="text-gray-900">{detail.funding_stage || "—"}</dd>
                 <dt className="text-gray-500">Annual Revenue</dt>
                 <dd className="text-gray-900">{detail.annual_revenue_range || "—"}</dd>
+                <dt className="text-gray-500">Apollo ID</dt>
+                <dd className="font-mono text-xs text-gray-700 break-all">
+                  {detail.apollo_id || <span className="text-red-500">not set</span>}
+                </dd>
                 {detail.linkedin_url && (
                   <>
                     <dt className="text-gray-500">LinkedIn</dt>
