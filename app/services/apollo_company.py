@@ -352,8 +352,8 @@ class ApolloCompanyEnrichmentService:
                 "company_id": str(company.id),
                 "client_id": client_id,
                 "pulled": len(people),
-                "created": created_count,
-                "updated": updated_count,
+                "leads_created": created_count,   # "created" is reserved on LogRecord
+                "leads_updated": updated_count,
                 "duration_ms": duration_ms,
             },
         )
