@@ -65,6 +65,18 @@ async def get_company_by_apollo_id(
     return result.scalar_one_or_none()
 
 
+async def get_company_by_name(
+    db: AsyncSession, name: str, client_id: int
+) -> Company | None:
+    result = await db.execute(
+        select(Company).where(
+            func.lower(Company.name) == name.lower(),
+            Company.client_id == client_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 # ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
@@ -119,7 +131,7 @@ async def create_company(db: AsyncSession, data: dict, client_id: int) -> Compan
 async def upsert_company(
     db: AsyncSession, data: dict, client_id: int
 ) -> tuple[Company, bool]:
-    """Create or update a company. Match: apollo_id → domain → create new.
+    """Create or update a company. Match: apollo_id → domain → name → create new.
 
     On match, only updates fields that have non-None values in data.
     Returns (company, created).
@@ -137,6 +149,10 @@ async def upsert_company(
     # Then by domain
     if existing is None and data.get("domain"):
         existing = await get_company_by_domain(db, data["domain"], client_id)
+
+    # Then by name (case-insensitive)
+    if existing is None and data.get("name"):
+        existing = await get_company_by_name(db, data["name"], client_id)
 
     if existing is None:
         company = Company(**data, client_id=client_id)

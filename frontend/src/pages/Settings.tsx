@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import {
   fetchRoutingSettings,
   updateRoutingSettings,
-  fetchEnrichmentSettings,
-  updateEnrichmentSettings,
   getApiKeys,
   setApiKey,
   deleteApiKey,
@@ -11,7 +9,7 @@ import {
   getAiProvider,
   setAiProvider,
 } from "../api/settings";
-import type { ApiKeyEntry, EnrichmentSettings, RoutingSettings } from "../types/settings";
+import type { ApiKeyEntry, RoutingSettings } from "../types/settings";
 
 // ── Integration config ──────────────────────────────────────────────────────
 
@@ -62,15 +60,6 @@ export default function Settings() {
   const [routingSaving, setRoutingSaving] = useState(false);
   const [routingMsg, setRoutingMsg] = useState("");
 
-  const [enrichment, setEnrichment] = useState<EnrichmentSettings>({
-    apollo_api_key: "",
-    clearbit_api_key: "",
-    proxycurl_api_key: "",
-  });
-  const [enrichmentLoading, setEnrichmentLoading] = useState(true);
-  const [enrichmentSaving, setEnrichmentSaving] = useState(false);
-  const [enrichmentMsg, setEnrichmentMsg] = useState("");
-
   // ── New: API Keys & Integrations state ──
   const [keyStatuses, setKeyStatuses] = useState<ApiKeyEntry[]>([]);
   const [keysLoading, setKeysLoading] = useState(true);
@@ -92,15 +81,6 @@ export default function Settings() {
       }))
       .catch(() => setRoutingMsg("Failed to load routing settings"))
       .finally(() => setRoutingLoading(false));
-
-    fetchEnrichmentSettings()
-      .then((d) => setEnrichment({
-        apollo_api_key: d.apollo_api_key || "",
-        clearbit_api_key: d.clearbit_api_key || "",
-        proxycurl_api_key: d.proxycurl_api_key || "",
-      }))
-      .catch(() => setEnrichmentMsg("Failed to load enrichment settings"))
-      .finally(() => setEnrichmentLoading(false));
 
     getApiKeys()
       .then(setKeyStatuses)
@@ -227,23 +207,6 @@ export default function Settings() {
       setRoutingMsg("Failed to save routing settings");
     } finally {
       setRoutingSaving(false);
-    }
-  };
-
-  const saveEnrichment = async () => {
-    setEnrichmentSaving(true);
-    setEnrichmentMsg("");
-    try {
-      await updateEnrichmentSettings({
-        apollo_api_key: enrichment.apollo_api_key || null,
-        clearbit_api_key: enrichment.clearbit_api_key || null,
-        proxycurl_api_key: enrichment.proxycurl_api_key || null,
-      });
-      setEnrichmentMsg("Enrichment settings saved");
-    } catch {
-      setEnrichmentMsg("Failed to save enrichment settings");
-    } finally {
-      setEnrichmentSaving(false);
     }
   };
 
@@ -470,33 +433,16 @@ export default function Settings() {
         )}
       </div>
 
-      {/* ── GHL Routing & Thresholds (EXISTING — untouched) ── */}
+      {/* ── Routing Thresholds ── */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">GHL Routing &amp; Thresholds</h2>
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Routing Thresholds</h2>
+        <p className="mt-0.5 mb-4 text-xs text-gray-500">
+          GHL webhook URLs are managed above in API Keys &amp; Integrations.
+        </p>
         {routingLoading ? (
           <p className="text-gray-500 text-sm">Loading...</p>
         ) : (
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Inbound Webhook URL</label>
-              <input
-                type="text"
-                value={routing.ghl_inbound_webhook_url || ""}
-                onChange={(e) => setRouting({ ...routing, ghl_inbound_webhook_url: e.target.value })}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="https://..."
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Outbound Webhook URL</label>
-              <input
-                type="text"
-                value={routing.ghl_outbound_webhook_url || ""}
-                onChange={(e) => setRouting({ ...routing, ghl_outbound_webhook_url: e.target.value })}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="https://..."
-              />
-            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Inbound Threshold</label>
@@ -527,44 +473,7 @@ export default function Settings() {
               disabled={routingSaving}
               className="px-4 py-2 text-sm text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50"
             >
-              {routingSaving ? "Saving..." : "Save Routing Settings"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ── Enrichment API Keys (EXISTING — untouched) ── */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Enrichment API Keys</h2>
-        {enrichmentLoading ? (
-          <p className="text-gray-500 text-sm">Loading...</p>
-        ) : (
-          <div className="space-y-4">
-            {(["apollo_api_key", "clearbit_api_key", "proxycurl_api_key"] as const).map((key) => (
-              <div key={key}>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {key.replace(/_/g, " ").replace(/\bapi\b/i, "API").replace(/\bkey\b/i, "Key")}
-                </label>
-                <input
-                  type="password"
-                  value={enrichment[key] || ""}
-                  onChange={(e) => setEnrichment({ ...enrichment, [key]: e.target.value })}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  placeholder="sk-..."
-                />
-              </div>
-            ))}
-            {enrichmentMsg && (
-              <p className={`text-sm ${enrichmentMsg.includes("Failed") ? "text-red-600" : "text-green-600"}`}>
-                {enrichmentMsg}
-              </p>
-            )}
-            <button
-              onClick={saveEnrichment}
-              disabled={enrichmentSaving}
-              className="px-4 py-2 text-sm text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {enrichmentSaving ? "Saving..." : "Save Enrichment Settings"}
+              {routingSaving ? "Saving..." : "Save Thresholds"}
             </button>
           </div>
         )}

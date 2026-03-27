@@ -5,10 +5,11 @@ Multi-tenancy is a hard security boundary — every query filters by client_id.
 """
 import csv
 import io
+import json
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +34,7 @@ from app.services.company import (
     list_companies,
     upsert_company,
 )
-from app.services.csv_mapping import parse_company_csv_row
+from app.services.csv_mapping import apply_user_mapping, parse_company_csv_row
 
 logger = logging.getLogger(__name__)
 
@@ -180,9 +181,17 @@ async def list_companies_endpoint(
 @router.post("/bulk", response_model=CompanyBulkUploadResponse, summary="Bulk upload companies from CSV")
 async def bulk_upload_companies(
     file: UploadFile,
+    column_mapping: str | None = Form(None),
     client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
 ) -> CompanyBulkUploadResponse:
+    """Upload companies from CSV.
+
+    Accepts an optional ``column_mapping`` form field: a JSON object mapping
+    CSV header names to LeadEngine field names.  When provided, that mapping
+    is used instead of auto-detection so every column lands exactly where the
+    user intended.
+    """
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a .csv")
 
@@ -190,6 +199,16 @@ async def bulk_upload_companies(
         content = (await file.read()).decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
+
+    # Parse the optional user-supplied column mapping
+    user_mapping: dict[str, str] | None = None
+    if column_mapping:
+        try:
+            user_mapping = json.loads(column_mapping)
+            if not isinstance(user_mapping, dict):
+                raise ValueError("column_mapping must be a JSON object")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid column_mapping: {exc}")
 
     reader = csv.DictReader(io.StringIO(content))
 
@@ -200,7 +219,11 @@ async def bulk_upload_companies(
 
     for row_num, row in enumerate(reader, start=1):
         try:
-            data = parse_company_csv_row(row)
+            if user_mapping is not None:
+                data = apply_user_mapping(row, user_mapping)
+            else:
+                data = parse_company_csv_row(row)
+
             if not data.get("name"):
                 errors.append(f"Row {row_num}: missing required field 'name'")
                 skipped += 1

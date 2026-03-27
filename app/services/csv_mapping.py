@@ -119,13 +119,13 @@ def _normalize_domain_value(val: str) -> str:
 
 COMPANY_FIELD_MAPPINGS: list[CompanyFieldMapping] = [
     CompanyFieldMapping(["company", "name"], "name"),
-    CompanyFieldMapping(["website", "company website url"], "domain", post_process="normalize_domain"),
+    CompanyFieldMapping(["domain", "website", "company website url"], "domain", post_process="normalize_domain"),
     CompanyFieldMapping(["industry"], "industry"),
-    CompanyFieldMapping(["# employees", "employees", "number of employees"], "employee_count", cast=int),
+    CompanyFieldMapping(["# employees", "employees", "number of employees", "employee count"], "employee_count", cast=int),
     CompanyFieldMapping(["city"], "location_city"),
     CompanyFieldMapping(["state"], "location_state"),
     CompanyFieldMapping(["country"], "location_country"),
-    CompanyFieldMapping(["apollo account id", "account id"], "apollo_id"),
+    CompanyFieldMapping(["apollo account id", "account id", "apollo id"], "apollo_id"),
     CompanyFieldMapping(["funding stage"], "funding_stage"),
 ]
 
@@ -151,6 +151,46 @@ def parse_company_csv_row(row: dict[str, str]) -> dict:
                     result[mapping.company_field] = val
                 break  # first alias wins
 
+    return result
+
+
+# Sentinel value sent by the frontend when the user wants to skip a column
+SKIP_SENTINEL = "__skip__"
+
+# Field-level cast and post-process rules, keyed by company field name
+_USER_MAPPING_CAST: dict[str, type] = {
+    "employee_count": int,
+}
+_USER_MAPPING_POSTPROCESS: dict[str, object] = {
+    "domain": _normalize_domain_value,
+    "website": _normalize_domain_value,
+}
+
+
+def apply_user_mapping(row: dict[str, str], column_mapping: dict[str, str]) -> dict:
+    """Build a Company data dict from a CSV row using a user-provided column mapping.
+
+    column_mapping: {csv_header: company_field_name | SKIP_SENTINEL}
+    Skips columns mapped to SKIP_SENTINEL or empty string.
+    Applies the same cast/post-process rules as parse_company_csv_row.
+    """
+    result: dict = {}
+    for csv_header, field_name in column_mapping.items():
+        if not field_name or field_name == SKIP_SENTINEL:
+            continue
+        val = (row.get(csv_header) or "").strip()
+        if not val:
+            continue
+        postprocess = _USER_MAPPING_POSTPROCESS.get(field_name)
+        if postprocess:
+            val = postprocess(val)  # type: ignore[operator]
+        cast = _USER_MAPPING_CAST.get(field_name)
+        if cast is not None:
+            try:
+                val = cast(val)
+            except (ValueError, TypeError):
+                continue  # skip bad cast rather than store garbage
+        result[field_name] = val
     return result
 
 

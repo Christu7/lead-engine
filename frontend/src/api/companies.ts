@@ -77,9 +77,15 @@ export async function bulkEnrichCompanies(): Promise<{ queued: number }> {
   return res.json();
 }
 
-export async function uploadCompaniesCsv(file: File): Promise<CompanyBulkUploadResponse> {
+export async function uploadCompaniesCsv(
+  file: File,
+  columnMapping?: Record<string, string>,
+): Promise<CompanyBulkUploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (columnMapping) {
+    form.append("column_mapping", JSON.stringify(columnMapping));
+  }
   const res = await apiFetch("/companies/bulk", {
     method: "POST",
     body: form,
