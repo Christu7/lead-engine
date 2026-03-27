@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Literal
 
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user, require_admin
+from app.core.security import validate_webhook_url
 from app.core.dynamic_config import dynamic_config
 from app.core.exceptions import ConfigurationError
 from app.models.client import Client
@@ -219,6 +221,16 @@ async def set_key(
         )
     if not body.value or not body.value.strip():
         raise HTTPException(status_code=400, detail="Key value must not be empty")
+
+    # GHL inbound/outbound values are webhook URLs — validate them against SSRF risks.
+    if key_name in _URL_KEYS:
+        try:
+            await asyncio.to_thread(validate_webhook_url, body.value.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid URL for '{key_name}': {exc}",
+            )
 
     record = await store_svc.set_key(db, key_name, body.value.strip())
 

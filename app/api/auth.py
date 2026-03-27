@@ -1,15 +1,15 @@
-import time
-
 from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_active_user, get_token_data
+from app.core.rate_limit import limiter
 from app.core.redis import redis as redis_client
 from app.core.security import TokenData, create_access_token
 from app.models.user import User, UserClient
@@ -22,34 +22,6 @@ from app.services.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-_LOGIN_RATE_LIMIT = 5   # attempts
-_LOGIN_WINDOW_SEC = 60  # per minute
-
-
-async def _check_login_rate_limit(request: Request) -> None:
-    """Sliding-window rate limiter: max 5 login attempts per minute per source IP."""
-    client_ip = request.client.host if request.client else "unknown"
-    key = f"ratelimit:login:{client_ip}"
-    now = time.time()
-    window_start = now - _LOGIN_WINDOW_SEC
-
-    # Check count without recording — matches the fix in rate_limiter.py
-    pipe = redis_client.pipeline()
-    pipe.zremrangebyscore(key, 0, window_start)
-    pipe.zcard(key)
-    results = await pipe.execute()
-
-    if results[1] >= _LOGIN_RATE_LIMIT:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts. Please try again in a minute.",
-        )
-
-    pipe = redis_client.pipeline()
-    pipe.zadd(key, {str(now): now})
-    pipe.expire(key, _LOGIN_WINDOW_SEC)
-    await pipe.execute()
 
 oauth = OAuth()
 oauth.register(
@@ -67,15 +39,16 @@ def _issue_token(user: User, active_client_id: int | None) -> str:
         email=user.email,
         role=user.role,
         active_client_id=active_client_id,
+        token_version=user.token_version,
     )
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute", key_func=get_remote_address)
 async def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(_check_login_rate_limit),
 ):
     user = await authenticate_user(db, form_data.username, form_data.password)
     if user is None:
@@ -107,6 +80,21 @@ async def me(
     )
 
 
+@router.post("/logout", status_code=200)
+async def logout(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Invalidate all currently-issued tokens for this user by bumping token_version.
+
+    Any JWT issued before this call will fail the token_version check in
+    get_current_user, forcing a re-login.
+    """
+    current_user.token_version = (current_user.token_version or 1) + 1
+    await db.commit()
+    return {"message": "Logged out successfully. All active sessions have been invalidated."}
+
+
 @router.post("/switch-client/{client_id}", response_model=TokenResponse)
 async def switch_client(
     client_id: int,
@@ -123,6 +111,7 @@ async def switch_client(
 
 
 @router.get("/google")
+@limiter.limit("20/minute", key_func=get_remote_address)
 async def google_login(request: Request):
     redirect_uri = f"{settings.BACKEND_URL}/api/auth/google/callback"
     return await oauth.google.authorize_redirect(request, redirect_uri)

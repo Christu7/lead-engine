@@ -1,29 +1,29 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class LeadCreate(BaseModel):
-    name: str
+    name: str = Field(max_length=255)
     email: EmailStr
-    phone: str | None = None
-    company: str | None = None
-    title: str | None = None
-    source: str | None = None
-    apollo_id: str | None = None
-    status: str = "new"
+    phone: str | None = Field(default=None, max_length=50)
+    company: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=100)
+    apollo_id: str | None = Field(default=None, max_length=100)
+    status: str = Field(default="new", max_length=50)
     enrichment_data: dict | None = None
 
 
 class LeadUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=255)
     email: EmailStr | None = None
-    phone: str | None = None
-    company: str | None = None
-    title: str | None = None
-    source: str | None = None
-    apollo_id: str | None = None
-    status: str | None = None
+    phone: str | None = Field(default=None, max_length=50)
+    company: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=100)
+    apollo_id: str | None = Field(default=None, max_length=100)
+    status: str | None = Field(default=None, max_length=50)
     score: int | None = None
     enrichment_data: dict | None = None
 

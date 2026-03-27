@@ -1,7 +1,7 @@
 """Schemas for lead export endpoints (CSV and Webhook)."""
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 VALID_EXPORT_FIELDS = frozenset({
     "name", "email", "phone", "company", "title", "source",
@@ -68,7 +68,7 @@ class ExportRequest(BaseModel):
 
 
 class WebhookExportRequest(BaseModel):
-    webhook_url: str
+    webhook_url: str = Field(max_length=2000)
     filters: LeadFilters = LeadFilters()
     batch_size: int = 50
     include_enrichment: bool = True

@@ -65,8 +65,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             extra["user_id"] = token_data.user_id
             extra["client_id"] = token_data.active_client_id
 
-        # Only log request body on failure, and only for mutation methods
-        if body_bytes and response.status_code >= 400:
+        # Only log request body on failure, and only for mutation methods.
+        # Never log webhook payloads — they may contain PII or API keys.
+        is_webhook = request.url.path.startswith("/api/webhooks")
+        if body_bytes and response.status_code >= 400 and not is_webhook:
             try:
                 extra["request_body"] = _redact_body(json.loads(body_bytes))
             except Exception:

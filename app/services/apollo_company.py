@@ -20,6 +20,37 @@ _APOLLO_BASE_HEADERS = {
 }
 
 
+async def _reveal_email(
+    http: httpx.AsyncClient, headers: dict, person: dict
+) -> str | None:
+    """Call Apollo /people/match to reveal the email for a person by their Apollo ID.
+
+    Uses 1 reveal credit per call. Returns None on any error or missing email.
+    """
+    apollo_id = person.get("id")
+    if not apollo_id:
+        return None
+    try:
+        resp = await http.post(
+            "https://api.apollo.io/v1/people/match",
+            headers=headers,
+            json={"id": apollo_id, "reveal_personal_emails": True},
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "Apollo people/match non-200",
+                extra={"apollo_person_id": apollo_id, "status_code": resp.status_code},
+            )
+            return None
+        return (resp.json().get("person") or {}).get("email") or None
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "Apollo people/match request failed",
+            extra={"apollo_person_id": apollo_id, "error": str(exc)},
+        )
+        return None
+
+
 async def _apollo_headers(db: AsyncSession) -> dict:
     """Resolve Apollo API key via dynamic_config and return request headers."""
     try:
@@ -236,14 +267,87 @@ class ApolloCompanyEnrichmentService:
 
         try:
             headers = await _apollo_headers(db)
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
+            async with httpx.AsyncClient(timeout=30) as http:
+                resp = await http.post(
                     "https://api.apollo.io/v1/mixed_people/api_search",
                     headers=headers,
                     json=payload,
                 )
                 resp.raise_for_status()
                 body = resp.json()
+
+                # api_search may return results under "people" or "contacts"
+                people = body.get("people") or body.get("contacts") or []
+                pagination = body.get("pagination") or {}
+                total_found = pagination.get("total_entries", len(people))
+
+                logger.info(
+                    "Apollo contact pull response received",
+                    extra={
+                        "company_id": str(company.id),
+                        "client_id": client_id,
+                        "response_keys": list(body.keys()),
+                        "people_count": len(people),
+                        "total_entries": total_found,
+                    },
+                )
+
+                created_count = 0
+                updated_count = 0
+                reveal_attempts = 0
+                reveals_succeeded = 0
+
+                for person in people:
+                    email = person.get("email")
+
+                    if not email:
+                        # Attempt to reveal email via /people/match (uses 1 credit)
+                        reveal_attempts += 1
+                        email = await _reveal_email(http, headers, person)
+                        if email:
+                            reveals_succeeded += 1
+                        else:
+                            logger.warning(
+                                "Apollo contact skipped: no email after reveal attempt",
+                                extra={
+                                    "apollo_person_id": person.get("id"),
+                                    "company_id": str(company.id),
+                                    "client_id": client_id,
+                                },
+                            )
+                            continue
+
+                    first = person.get("first_name") or ""
+                    last = person.get("last_name") or ""
+                    name = f"{first} {last}".strip() or email
+
+                    person_org = person.get("organization") or {}
+
+                    lead_data = LeadCreate(
+                        name=name,
+                        email=email,
+                        title=person.get("title"),
+                        company=person_org.get("name") or company.name,
+                        source="apollo_pull",
+                        apollo_id=person.get("id"),
+                        enrichment_data=(
+                            {"linkedin_url": person["linkedin_url"]}
+                            if person.get("linkedin_url")
+                            else None
+                        ),
+                    )
+
+                    lead, action = await upsert_lead(db, lead_data, client_id)
+
+                    # Explicitly link to the company we just pulled from
+                    if lead.company_id is None:
+                        lead.company_id = company.id
+                        await db.commit()
+
+                    if action == "created":
+                        created_count += 1
+                    else:
+                        updated_count += 1
 
         except httpx.HTTPStatusError as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -281,70 +385,6 @@ class ApolloCompanyEnrichmentService:
                 cause=exc,
             ) from exc
 
-        # api_search may return results under "people" or "contacts" depending on plan/version
-        people = body.get("people") or body.get("contacts") or []
-        pagination = body.get("pagination") or {}
-        total_found = pagination.get("total_entries", len(people))
-
-        logger.info(
-            "Apollo contact pull response received",
-            extra={
-                "company_id": str(company.id),
-                "client_id": client_id,
-                "response_keys": list(body.keys()),
-                "people_count": len(people),
-                "total_entries": total_found,
-            },
-        )
-
-        created_count = 0
-        updated_count = 0
-
-        for person in people:
-            email = person.get("email")
-            if not email:
-                logger.warning(
-                    "Apollo contact skipped: no email",
-                    extra={
-                        "apollo_person_id": person.get("id"),
-                        "company_id": str(company.id),
-                        "client_id": client_id,
-                    },
-                )
-                continue
-
-            first = person.get("first_name") or ""
-            last = person.get("last_name") or ""
-            name = f"{first} {last}".strip() or email
-
-            person_org = person.get("organization") or {}
-
-            lead_data = LeadCreate(
-                name=name,
-                email=email,
-                title=person.get("title"),
-                company=person_org.get("name") or company.name,
-                source="apollo_pull",
-                apollo_id=person.get("id"),
-                enrichment_data=(
-                    {"linkedin_url": person["linkedin_url"]}
-                    if person.get("linkedin_url")
-                    else None
-                ),
-            )
-
-            lead, action = await upsert_lead(db, lead_data, client_id)
-
-            # Explicitly link to the company we just pulled from
-            if lead.company_id is None:
-                lead.company_id = company.id
-                await db.commit()
-
-            if action == "created":
-                created_count += 1
-            else:
-                updated_count += 1
-
         duration_ms = int((time.monotonic() - start) * 1000)
         logger.info(
             "Apollo contact pull completed",
@@ -354,6 +394,8 @@ class ApolloCompanyEnrichmentService:
                 "pulled": len(people),
                 "leads_created": created_count,   # "created" is reserved on LogRecord
                 "leads_updated": updated_count,
+                "reveal_attempts": reveal_attempts,
+                "reveals_succeeded": reveals_succeeded,
                 "duration_ms": duration_ms,
             },
         )

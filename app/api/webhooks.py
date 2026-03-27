@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_client_id_from_api_key
+from app.core.rate_limit import get_api_key_rate_key, limiter
 from app.schemas.lead import LeadCreate, LeadResponse
 from app.schemas.webhook import ApolloWebhookPayload, TypeformWebhookPayload, WebsiteWebhookPayload
 from app.services import lead as lead_service
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/apollo", response_model=LeadResponse, status_code=200)
+@limiter.limit("100/minute", key_func=get_api_key_rate_key)
 async def apollo_webhook(
     request: Request,
     client_id: int = Depends(get_client_id_from_api_key),
@@ -65,7 +67,9 @@ async def apollo_webhook(
 
 
 @router.post("/leads", response_model=LeadResponse, status_code=201)
+@limiter.limit("100/minute", key_func=get_api_key_rate_key)
 async def create_lead_webhook(
+    request: Request,
     data: LeadCreate,
     client_id: int = Depends(get_client_id_from_api_key),
     db: AsyncSession = Depends(get_db),
@@ -75,6 +79,7 @@ async def create_lead_webhook(
 
 
 @router.post("/typeform", response_model=LeadResponse, status_code=201)
+@limiter.limit("100/minute", key_func=get_api_key_rate_key)
 async def typeform_webhook(
     request: Request,
     client_id: int = Depends(get_client_id_from_api_key),
@@ -110,6 +115,7 @@ async def typeform_webhook(
 
 
 @router.post("/website", response_model=LeadResponse, status_code=201)
+@limiter.limit("100/minute", key_func=get_api_key_rate_key)
 async def website_webhook(
     request: Request,
     client_id: int = Depends(get_client_id_from_api_key),

@@ -18,3 +18,4 @@ sentry-sdk[fastapi]==2.19.2
 anthropic==0.40.0
 cryptography>=41.0.0
 openai>=1.0.0
+slowapi==0.1.9

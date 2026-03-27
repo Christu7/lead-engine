@@ -10,11 +10,19 @@ import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
+from starlette.requests import Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user, require_admin
+from app.core.input_validation import (
+    ALLOWED_CSV_CONTENT_TYPES,
+    MAX_CSV_FILE_SIZE,
+    MAX_CSV_ROWS,
+    sanitize_csv_row,
+)
+from app.core.rate_limit import limiter
 from app.models.company import Company
 from app.models.lead import Lead
 from app.schemas.company import (
@@ -179,7 +187,9 @@ async def list_companies_endpoint(
 
 
 @router.post("/bulk", response_model=CompanyBulkUploadResponse, summary="Bulk upload companies from CSV")
+@limiter.limit("5/minute")
 async def bulk_upload_companies(
+    request: Request,
     file: UploadFile,
     column_mapping: str | None = Form(None),
     client_id: int = Depends(get_client_id),
@@ -195,8 +205,23 @@ async def bulk_upload_companies(
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a .csv")
 
+    # Content-Type check (browsers vary; reject obvious non-CSV types)
+    if file.content_type and file.content_type not in ALLOWED_CSV_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unexpected content type '{file.content_type}'. Upload a CSV file.",
+        )
+
+    # File-size check: read at most MAX+1 bytes to detect overflow without buffering the world
+    raw = await file.read(MAX_CSV_FILE_SIZE + 1)
+    if len(raw) > MAX_CSV_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV file too large. Maximum size is {MAX_CSV_FILE_SIZE // 1024 // 1024} MB.",
+        )
+
     try:
-        content = (await file.read()).decode("utf-8")
+        content = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
 
@@ -212,13 +237,24 @@ async def bulk_upload_companies(
 
     reader = csv.DictReader(io.StringIO(content))
 
+    # Load all rows upfront so we can check the total before committing any writes
+    rows = list(reader)
+    if len(rows) > MAX_CSV_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV too large. Maximum {MAX_CSV_ROWS:,} data rows allowed (got {len(rows):,}).",
+        )
+
     created = 0
     updated = 0
     skipped = 0
     errors: list[str] = []
 
-    for row_num, row in enumerate(reader, start=1):
+    for row_num, row in enumerate(rows, start=1):
         try:
+            # Sanitise field values before mapping (strips control chars + formula injection)
+            row = sanitize_csv_row(row)
+
             if user_mapping is not None:
                 data = apply_user_mapping(row, user_mapping)
             else:

@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import uuid
@@ -7,9 +8,18 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user
+from app.core.input_validation import (
+    ALLOWED_CSV_CONTENT_TYPES,
+    MAX_CSV_FILE_SIZE,
+    MAX_CSV_ROWS,
+    sanitize_csv_row,
+)
+from app.core.rate_limit import limiter
+from app.core.security import validate_webhook_url
 from app.schemas.export import ExportRequest, WebhookExportRequest, WebhookExportResponse
 from app.services import export as export_service
 from app.services.ai_enrichment import run_analysis_for_lead
@@ -90,20 +100,41 @@ async def bulk_import(
     if not file.filename or not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a .csv")
 
+    if file.content_type and file.content_type not in ALLOWED_CSV_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unexpected content type '{file.content_type}'. Upload a CSV file.",
+        )
+
+    raw = await file.read(MAX_CSV_FILE_SIZE + 1)
+    if len(raw) > MAX_CSV_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"CSV file too large. Maximum size is {MAX_CSV_FILE_SIZE // 1024 // 1024} MB.",
+        )
+
     try:
-        content = (await file.read()).decode("utf-8")
+        content = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded")
 
     reader = csv.DictReader(io.StringIO(content))
     profile = detect_format(reader.fieldnames)
 
+    rows = list(reader)
+    if len(rows) > MAX_CSV_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV too large. Maximum {MAX_CSV_ROWS:,} data rows allowed (got {len(rows):,}).",
+        )
+
     valid_leads: list[LeadCreate] = []
     errors: list[BulkImportRow] = []
     total_rows = 0
 
-    for row_num, row in enumerate(reader, start=1):
+    for row_num, row in enumerate(rows, start=1):
         total_rows += 1
+        row = sanitize_csv_row(row)
         mapped = map_row(row, profile)
         try:
             lead_data = LeadCreate(**mapped)
@@ -153,13 +184,21 @@ async def export_leads_csv(
 
 
 @router.post("/export/webhook", response_model=WebhookExportResponse, status_code=202)
+@limiter.limit("10/minute")
 async def export_leads_webhook(
+    http_request: Request,
     request: WebhookExportRequest,
     background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
 ):
     """Dispatch filtered leads to a webhook URL in batches. Returns 202 immediately."""
+    # SSRF protection: verify the caller-supplied URL resolves to a public address.
+    try:
+        await asyncio.to_thread(validate_webhook_url, request.webhook_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     total_leads = await export_service.count_export_leads(db, client_id, request.filters)
     total_batches = max(1, -(-total_leads // request.batch_size))  # ceiling division
     export_id = str(uuid.uuid4())

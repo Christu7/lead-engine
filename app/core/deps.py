@@ -33,6 +33,13 @@ async def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Reject tokens issued before the last logout / token invalidation.
+    if token_data.token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been invalidated. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
