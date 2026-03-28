@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_current_active_user, get_token_data, require_admin
+from app.core.deps import get_current_active_user, get_token_data, require_superadmin
 from app.core.security import TokenData
 from app.models.user import User, UserClient
 from app.schemas.client import ClientCreate, ClientResponse, ClientUpdate
@@ -32,14 +32,11 @@ async def get_my_client(
 @router.post("/", response_model=ClientResponse, status_code=201)
 async def create_client(
     data: ClientCreate,
-    token_data: TokenData = Depends(require_admin),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_superadmin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new client. Admin only."""
+    """Create a new client. Superadmin only."""
     client = await client_service.create_client(db, data)
-    # Auto-assign the creating admin to the new client
-    db.add(UserClient(user_id=current_user.id, client_id=client.id))
     await db.commit()
     return client
 
@@ -80,10 +77,10 @@ async def update_client(
 @router.delete("/{client_id}", status_code=204)
 async def delete_client(
     client_id: int,
-    token_data: TokenData = Depends(require_admin),
+    _: User = Depends(require_superadmin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a client. Admin only."""
+    """Delete a client. Superadmin only."""
     deleted = await client_service.delete_client(db, client_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Client not found")

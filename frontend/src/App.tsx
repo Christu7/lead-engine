@@ -9,6 +9,7 @@ import Leads from "./pages/Leads";
 import ScoringRules from "./pages/ScoringRules";
 import Settings from "./pages/Settings";
 import Companies from "./pages/Companies";
+import SuperAdmin from "./pages/SuperAdmin";
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="companies" element={<Companies />} />
             <Route path="scoring-rules" element={<ScoringRules />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="super-admin" element={<SuperAdmin />} />
           </Route>
         </Routes>
       </AuthProvider>

@@ -54,8 +54,16 @@ class TestScoringRulesEndpoint:
         )
         assert resp.status_code == 401
 
-    async def test_create_rule_returns_201(self, authenticated_client):
+    async def test_member_cannot_create_rule(self, authenticated_client):
+        """Members do not have access to scoring rules (admin+ only)."""
         resp = await authenticated_client.post(
+            "/api/scoring-rules/",
+            json={"field": "title", "operator": "contains", "value": "VP", "points": 20},
+        )
+        assert resp.status_code == 403
+
+    async def test_create_rule_returns_201(self, admin_client):
+        resp = await admin_client.post(
             "/api/scoring-rules/",
             json={"field": "title", "operator": "contains", "value": "VP", "points": 20},
         )
@@ -67,15 +75,15 @@ class TestScoringRulesEndpoint:
         assert body["points"] == 20
         assert body["is_active"] is True
 
-    async def test_created_rule_is_scoped_to_client(self, authenticated_client):
-        resp = await authenticated_client.post(
+    async def test_created_rule_is_scoped_to_client(self, admin_client):
+        resp = await admin_client.post(
             "/api/scoring-rules/",
             json={"field": "company", "operator": "contains", "value": "Acme", "points": 10},
         )
         assert resp.status_code == 201
         rule_id = resp.json()["id"]
 
-        list_resp = await authenticated_client.get("/api/scoring-rules/")
+        list_resp = await admin_client.get("/api/scoring-rules/")
         assert list_resp.status_code == 200
         ids = [r["id"] for r in list_resp.json()["items"]]
         assert rule_id in ids

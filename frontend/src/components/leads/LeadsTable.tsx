@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -7,7 +8,33 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import type { Lead } from "../../types/lead";
+import type { CustomFieldDefinition } from "../../types/custom_field";
 import ScoreBadge from "./ScoreBadge";
+
+function renderCustomFieldCell(fieldType: string, value: unknown): React.ReactNode {
+  if (value == null) return <span className="text-gray-400">—</span>;
+  switch (fieldType) {
+    case "text": {
+      const s = String(value);
+      return s.length > 50
+        ? <span title={s}>{s.slice(0, 50)}…</span>
+        : <span>{s}</span>;
+    }
+    case "number":
+      return <span className="tabular-nums">{Number(value).toLocaleString()}</span>;
+    case "date":
+      try { return <span>{new Date(String(value)).toLocaleDateString()}</span>; }
+      catch { return <span>{String(value)}</span>; }
+    case "boolean":
+      return value
+        ? <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">Yes</span>
+        : <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">No</span>;
+    case "select":
+      return <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">{String(value)}</span>;
+    default:
+      return <span>{String(value)}</span>;
+  }
+}
 
 const col = createColumnHelper<Lead>();
 
@@ -30,6 +57,7 @@ interface LeadsTableProps {
   onRowSelectionChange: (sel: RowSelectionState) => void;
   onLeadClick: (leadId: number) => void;
   loading: boolean;
+  customFieldDefs?: CustomFieldDefinition[];
 }
 
 export default function LeadsTable({
@@ -46,8 +74,9 @@ export default function LeadsTable({
   onRowSelectionChange,
   onLeadClick,
   loading,
+  customFieldDefs,
 }: LeadsTableProps) {
-  const columns = [
+  const columns = useMemo(() => [
     col.display({
       id: "select",
       header: ({ table }) => (
@@ -92,7 +121,17 @@ export default function LeadsTable({
       header: "Created",
       cell: (info) => new Date(info.getValue()).toLocaleDateString(),
     }),
-  ];
+    ...(customFieldDefs ?? []).filter(fd => fd.show_in_table).map(fd =>
+      col.display({
+        id: `custom_${fd.field_key}`,
+        header: fd.field_label,
+        cell: ({ row }) => {
+          const val = (row.original.custom_fields ?? {})[fd.field_key];
+          return renderCustomFieldCell(fd.field_type, val);
+        },
+      })
+    ),
+  ], [onLeadClick, sortBy, sortOrder, customFieldDefs]);
 
   const sorting: SortingState = [{ id: sortBy, desc: sortOrder === "desc" }];
 

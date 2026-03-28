@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.lead import LeadResponse
 
@@ -71,6 +72,12 @@ class CompanyResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     lead_count: int = 0
+    custom_fields: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _extract_custom_fields(self) -> "CompanyResponse":
+        self.custom_fields = (self.enrichment_data or {}).get("custom_fields") or {}
+        return self
 
 
 class CompanyDetailResponse(CompanyResponse):

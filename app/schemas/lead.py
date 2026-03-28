@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class LeadCreate(BaseModel):
@@ -50,6 +51,12 @@ class LeadResponse(BaseModel):
     ai_status: str | None
     created_at: datetime
     updated_at: datetime
+    custom_fields: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _extract_custom_fields(self) -> "LeadResponse":
+        self.custom_fields = (self.enrichment_data or {}).get("custom_fields") or {}
+        return self
 
 
 class LeadListResponse(BaseModel):

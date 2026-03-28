@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { enrichLead, fetchLeadDetail, routeLead, runAiAnalysis } from "../../api/leads";
 import type { LeadDetail } from "../../types/lead";
 import ScoreBadge from "./ScoreBadge";
+import CustomFieldsSection from "../custom_fields/CustomFieldsSection";
 
 interface LeadSlideOverProps {
   leadId: number | null;
@@ -166,6 +167,14 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
                 </pre>
               </section>
             )}
+
+            {/* Custom Fields */}
+            <CustomFieldsSection
+              entityType="lead"
+              entityId={leadId}
+              values={detail.custom_fields ?? {}}
+              onSaved={(newValues) => setDetail(prev => prev ? { ...prev, custom_fields: newValues } : prev)}
+            />
 
             {/* AI Analysis */}
             <section>

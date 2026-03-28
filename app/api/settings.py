@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_client_id, get_current_active_user, require_admin
+from app.core.deps import get_client_id, require_admin
 from app.core.security import validate_webhook_url
 from app.core.dynamic_config import dynamic_config
 from app.core.exceptions import ConfigurationError
@@ -23,7 +23,7 @@ from app.services import api_key_store as store_svc
 router = APIRouter(
     prefix="/settings",
     tags=["settings"],
-    dependencies=[Depends(get_current_active_user)],
+    dependencies=[Depends(require_admin)],
 )
 
 ALLOWED_KEY_NAMES = frozenset([
@@ -172,7 +172,6 @@ async def update_enrichment_settings(
 @router.get("/keys", response_model=list[KeyStatusResponse], summary="List API key metadata")
 async def list_keys(
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> list[KeyStatusResponse]:
     """Return metadata for all stored API keys. Key values are never included."""
     stored = await store_svc.list_keys(db)
@@ -212,7 +211,6 @@ async def set_key(
     key_name: str,
     body: SetKeyRequest,
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> SetKeyResponse:
     if key_name not in ALLOWED_KEY_NAMES:
         raise HTTPException(
@@ -254,7 +252,6 @@ async def set_key(
 async def delete_key(
     key_name: str,
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> None:
     deleted = await store_svc.delete_key(db, key_name)
     if not deleted:
@@ -269,7 +266,6 @@ async def delete_key(
 async def verify_key(
     key_name: str,
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> VerifyKeyResponse:
     if key_name not in ALLOWED_KEY_NAMES:
         raise HTTPException(
@@ -293,7 +289,6 @@ async def verify_key(
 @router.get("/ai-provider", response_model=AiProviderResponse, summary="Get active AI provider")
 async def get_ai_provider(
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> AiProviderResponse:
     """Returns the active provider and which providers have a key configured."""
     available: list[str] = []
@@ -319,7 +314,6 @@ async def get_ai_provider(
 async def set_ai_provider(
     body: SetAiProviderRequest,
     db: AsyncSession = Depends(get_db),
-    _admin=Depends(require_admin),
 ) -> AiProviderResponse:
     """Validate the chosen provider has a key, then store the preference."""
     # Validate the chosen provider has a key available

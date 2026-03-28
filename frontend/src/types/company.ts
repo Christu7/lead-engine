@@ -1,3 +1,5 @@
+import type { CustomFieldValues } from "./custom_field";
+
 export interface Company {
   id: string;
   client_id: number;
@@ -22,6 +24,7 @@ export interface Company {
   lead_count: number;
   created_at: string;
   updated_at: string;
+  custom_fields: CustomFieldValues;
 }
 
 export interface CompanyDetail extends Company {

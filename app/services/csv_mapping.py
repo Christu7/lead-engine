@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @dataclass
@@ -192,6 +195,31 @@ def apply_user_mapping(row: dict[str, str], column_mapping: dict[str, str]) -> d
                 continue  # skip bad cast rather than store garbage
         result[field_name] = val
     return result
+
+
+async def get_custom_field_mappings(
+    db: "AsyncSession",
+    client_id: int,
+    entity_type: str,
+) -> list[dict[str, Any]]:
+    """Return active custom field definitions as mapping options.
+
+    Each entry has a ``value`` prefixed with ``"custom:"`` (used to distinguish
+    custom fields from standard lead/company fields in the column-mapping UI).
+    """
+    from app.services.custom_fields import get_field_definitions
+
+    field_defs = await get_field_definitions(db, client_id, entity_type)
+    return [
+        {
+            "value": f"custom:{fd.field_key}",
+            "label": fd.field_label,
+            "field_key": fd.field_key,
+            "field_type": fd.field_type,
+            "options": fd.options,
+        }
+        for fd in field_defs
+    ]
 
 
 def detect_format(headers: list[str] | None) -> CSVFormatProfile | None:

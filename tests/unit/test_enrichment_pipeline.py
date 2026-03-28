@@ -281,6 +281,65 @@ class TestEnrichmentPipeline:
         # Apollo failed (exception), clearbit succeeded → partial
         assert lead.enrichment_status == "partial"
 
+    async def test_enrichment_preserves_custom_fields(self):
+        """Re-enrichment must never wipe custom field data from enrichment_data."""
+        lead = LeadFactory.build(
+            id=1,
+            client_id=1,
+            email="a@b.com",
+            enrichment_data={"custom_fields": {"contract_value": 50000}},
+        )
+        client = ClientFactory.build(
+            id=1, settings={"enrichment": {"apollo_api_key": "key"}}
+        )
+        db = _make_db(lead, client)
+        provider = _make_provider("apollo", _success_result("apollo"))
+
+        with (
+            patch("app.services.enrichment.pipeline.get_cached", AsyncMock(return_value=None)),
+            patch("app.services.enrichment.pipeline.set_cached", AsyncMock()),
+            patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=50)),
+            patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
+            _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
+        ):
+            pipeline = EnrichmentPipeline([provider])
+            await pipeline.run(db, 1, 1)
+
+        assert lead.enrichment_status == "enriched"
+        assert "apollo" in lead.enrichment_data
+        # Custom fields must survive enrichment
+        assert lead.enrichment_data.get("custom_fields") == {"contract_value": 50000}
+
+    async def test_enrichment_preserves_custom_fields_when_enrichment_data_was_cleared(self):
+        """Custom fields preserved even when enrichment_data starts as None (re-enrichment path)."""
+        # The enrich endpoint preserves custom_fields before clearing enrichment_data.
+        # This test verifies the pipeline handles the {"custom_fields": {...}} starting state.
+        lead = LeadFactory.build(
+            id=1,
+            client_id=1,
+            email="a@b.com",
+            enrichment_data={"custom_fields": {"tier": "Enterprise"}},  # endpoint preserved this
+        )
+        client = ClientFactory.build(
+            id=1, settings={"enrichment": {"apollo_api_key": "key"}}
+        )
+        db = _make_db(lead, client)
+        provider = _make_provider("apollo", _success_result("apollo"))
+
+        with (
+            patch("app.services.enrichment.pipeline.get_cached", AsyncMock(return_value=None)),
+            patch("app.services.enrichment.pipeline.set_cached", AsyncMock()),
+            patch("app.services.enrichment.pipeline.score_lead", AsyncMock(return_value=50)),
+            patch("app.services.enrichment.pipeline.route_lead", AsyncMock()),
+            _patch_rate_limiter_ok(),
+            _patch_dynamic_config_no_key(),
+        ):
+            pipeline = EnrichmentPipeline([provider])
+            await pipeline.run(db, 1, 1)
+
+        assert lead.enrichment_data.get("custom_fields") == {"tier": "Enterprise"}
+
     async def test_lead_not_found_returns_early(self):
         db = MagicMock()
         db.get = AsyncMock(return_value=None)

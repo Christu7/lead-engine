@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import type { RowSelectionState } from "@tanstack/react-table";
 import { useLeads } from "../hooks/useLeads";
@@ -8,6 +8,8 @@ import LeadsTable from "../components/leads/LeadsTable";
 import LeadSlideOver from "../components/leads/LeadSlideOver";
 import ExportModal from "../components/leads/ExportModal";
 import type { LeadFiltersExport } from "../types/lead";
+import { getCustomFieldDefinitions } from "../api/custom_fields";
+import type { CustomFieldDefinition } from "../types/custom_field";
 
 export default function Leads() {
   const [searchParams] = useSearchParams();
@@ -17,6 +19,11 @@ export default function Leads() {
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [showExportModal, setShowExportModal] = useState(false);
+  const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
+
+  useEffect(() => {
+    getCustomFieldDefinitions("lead").then(setCustomFieldDefs).catch(() => {});
+  }, []); // empty deps — fetch once
 
   const search = searchParams.get("search") || "";
 
@@ -89,6 +96,7 @@ export default function Leads() {
         onRowSelectionChange={setRowSelection}
         onLeadClick={setSelectedLeadId}
         loading={loading}
+        customFieldDefs={customFieldDefs}
       />
 
       <LeadSlideOver leadId={selectedLeadId} onClose={() => setSelectedLeadId(null)} />

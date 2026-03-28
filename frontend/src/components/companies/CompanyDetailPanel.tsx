@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { enrichCompany, getCompany, pullContacts } from "../../api/companies";
 import type { CompanyDetail } from "../../types/company";
+import CustomFieldsSection from "../custom_fields/CustomFieldsSection";
 
 interface CompanyDetailPanelProps {
   companyId: string | null;
@@ -130,9 +131,9 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
     setFeedback(null);
     try {
       await enrichCompany(companyId);
-      setFeedback("Enrichment queued");
-      const updated = await getCompany(companyId);
-      setDetail(updated);
+      // Optimistically mark as enriching so the polling useEffect starts immediately
+      // without waiting for a getCompany() round-trip (which could miss the status change).
+      setDetail((prev) => (prev ? { ...prev, enrichment_status: "enriching" } : prev));
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : "Enrichment failed");
     } finally {
@@ -211,14 +212,21 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
                   </span>
                 )}
               </div>
-              <div className="mt-3">
+              <div className="mt-3 flex items-center gap-3">
                 <button
                   onClick={handleEnrich}
                   disabled={enriching || detail.enrichment_status === "enriching"}
                   className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  {enriching || detail.enrichment_status === "enriching" ? "Enriching…" : "Enrich Now"}
+                  {enriching || detail.enrichment_status === "enriching"
+                    ? "Enriching…"
+                    : detail.enrichment_status === "failed"
+                    ? "Retry Enrichment"
+                    : "Enrich Now"}
                 </button>
+                {detail.enrichment_status === "failed" && !enriching && (
+                  <span className="text-sm text-red-600">Enrichment failed</span>
+                )}
               </div>
             </section>
 
@@ -293,6 +301,14 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
                 <p className="text-sm text-gray-400">No keywords data</p>
               )}
             </section>
+
+            {/* ── Custom Fields ── */}
+            <CustomFieldsSection
+              entityType="company"
+              entityId={companyId}
+              values={detail.custom_fields ?? {}}
+              onSaved={(newValues) => setDetail(prev => prev ? { ...prev, custom_fields: newValues } : prev)}
+            />
 
             {/* ── Section 5: Pull Contacts ── */}
             <section>

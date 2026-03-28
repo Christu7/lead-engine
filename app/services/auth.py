@@ -63,8 +63,12 @@ async def find_or_create_google_user(db: AsyncSession, email: str, google_id: st
 
 
 async def get_user_clients(db: AsyncSession, user_id: int, role: str) -> list[Client]:
-    """Return all clients this user can access (admins see all clients)."""
-    if role == "admin":
+    """Return all clients this user can access.
+
+    superadmin → every client in the system
+    admin / member → only clients explicitly assigned via user_clients
+    """
+    if role == "superadmin":
         result = await db.execute(select(Client).order_by(Client.id))
     else:
         result = await db.execute(

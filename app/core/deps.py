@@ -70,12 +70,32 @@ async def require_admin(
     token_data: TokenData = Depends(get_token_data),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    if token_data.role != "admin":
+    """Allow admin OR superadmin. Members receive 403."""
+    if token_data.role not in ("admin", "superadmin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
     # Verify the user still exists and is active — JWT alone is not enough
+    user = await get_user_by_id(db, token_data.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account is disabled",
+        )
+    return user
+
+
+async def require_superadmin(
+    token_data: TokenData = Depends(get_token_data),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Allow superadmin only. Admins and members receive 403."""
+    if token_data.role != "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin access required",
+        )
     user = await get_user_by_id(db, token_data.user_id)
     if user is None or not user.is_active:
         raise HTTPException(

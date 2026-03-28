@@ -33,7 +33,7 @@ class EnrichmentPipeline:
     def __init__(self, providers: list[EnrichmentProvider]) -> None:
         self.providers = providers
 
-    async def run(self, db: AsyncSession, lead_id: int, client_id: int) -> None:
+    async def run(self, db: AsyncSession, lead_id: int, client_id: int, retry_count: int = 0) -> None:
         lead = await db.get(Lead, lead_id)
         if not lead:
             logger.warning("Enrichment: lead %d not found", lead_id)
@@ -46,6 +46,10 @@ class EnrichmentPipeline:
 
         lead.enrichment_status = "enriching"
         await db.commit()
+
+        # Capture custom fields BEFORE any provider writes so we can always restore them.
+        # A re-enrichment must never wipe user-defined custom field data.
+        preserved_custom = (lead.enrichment_data or {}).get("custom_fields", {})
 
         enrichment_keys = (client.settings or {}).get("enrichment", {})
 
@@ -174,9 +178,14 @@ class EnrichmentPipeline:
                     # 404 / no_data counts as success — person not found is not a failure
                     providers_succeeded += 1
                     if result.data:
-                        # Merge into enrichment_data under provider namespace
+                        # Merge into enrichment_data under provider namespace.
+                        # Explicitly restore custom_fields so no provider can overwrite them.
                         old = lead.enrichment_data or {}
-                        lead.enrichment_data = {**old, name: result.data}
+                        lead.enrichment_data = {
+                            **old,
+                            name: result.data,
+                            "custom_fields": preserved_custom,
+                        }
 
                         # Promote fields to lead if currently empty
                         if not lead.company and result.data.get("company_name"):
@@ -193,22 +202,64 @@ class EnrichmentPipeline:
 
             # Determine final enrichment status
             if providers_attempted == 0 and providers_rate_limited > 0:
-                # All providers were rate-limited — defer and requeue
-                lead.enrichment_status = "deferred"
-                logger.warning(
-                    "Enrichment: all providers rate-limited for lead %d, requeueing",
-                    lead_id,
-                    extra={"lead_id": lead_id, "client_id": client_id},
+                # All providers were rate-limited — defer with a delay, up to MAX_RATE_LIMIT_RETRIES
+                from app.services.enrichment.queue import (
+                    MAX_RATE_LIMIT_RETRIES,
+                    RATE_LIMIT_DELAY_SECONDS,
+                    enqueue_enrichment_delayed,
                 )
-                try:
-                    from app.services.enrichment.queue import enqueue_enrichment
-                    await enqueue_enrichment(lead_id, client_id)
-                except Exception as requeue_exc:
+
+                if retry_count >= MAX_RATE_LIMIT_RETRIES:
+                    # Exhausted retries — move to dead letter so admins can see it
+                    lead.enrichment_status = "failed"
                     logger.error(
-                        "Enrichment: failed to requeue deferred lead %d: %s",
+                        "Enrichment: lead %d rate-limited %d times — moving to dead letter",
                         lead_id,
-                        requeue_exc,
+                        retry_count,
+                        extra={"lead_id": lead_id, "client_id": client_id, "retry_count": retry_count},
                     )
+                    try:
+                        from app.core.redis import redis
+                        from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+                        dl_svc = DeadLetterService(redis)
+                        await dl_svc.push(
+                            DeadLetterType.ENRICHMENT,
+                            lead_id=lead_id,
+                            client_id=client_id,
+                            error=f"All providers rate-limited after {retry_count} retries",
+                        )
+                    except Exception as dl_exc:
+                        logger.error(
+                            "Enrichment: failed to write dead letter for lead %d: %s",
+                            lead_id,
+                            dl_exc,
+                        )
+                else:
+                    lead.enrichment_status = "deferred"
+                    logger.warning(
+                        "Enrichment: all providers rate-limited for lead %d "
+                        "(retry %d/%d) — requeueing in %ds",
+                        lead_id,
+                        retry_count + 1,
+                        MAX_RATE_LIMIT_RETRIES,
+                        RATE_LIMIT_DELAY_SECONDS,
+                        extra={
+                            "lead_id": lead_id,
+                            "client_id": client_id,
+                            "retry_count": retry_count,
+                        },
+                    )
+                    try:
+                        await enqueue_enrichment_delayed(
+                            lead_id, client_id, retry_count=retry_count + 1
+                        )
+                    except Exception as requeue_exc:
+                        logger.error(
+                            "Enrichment: failed to requeue deferred lead %d: %s",
+                            lead_id,
+                            requeue_exc,
+                        )
             elif providers_attempted == 0 or providers_succeeded == providers_attempted:
                 lead.enrichment_status = "enriched"
             elif providers_succeeded > 0:
@@ -241,6 +292,11 @@ class EnrichmentPipeline:
                     )
 
         except Exception as exc:
+            # Restore custom_fields even on unexpected failures
+            if preserved_custom:
+                data = lead.enrichment_data or {}
+                if data.get("custom_fields") != preserved_custom:
+                    lead.enrichment_data = {**data, "custom_fields": preserved_custom}
             lead.enrichment_status = "failed"
             logger.exception(
                 "Enrichment: unexpected error for lead %d",
@@ -267,6 +323,22 @@ class EnrichmentPipeline:
             raise
         finally:
             await db.commit()
+
+        # Auto-fill custom fields from enrichment results before scoring
+        if lead.enrichment_data:
+            try:
+                from app.services.custom_fields import apply_enrichment_mappings
+                await apply_enrichment_mappings(
+                    db, lead, lead.enrichment_data, client_id, "lead"
+                )
+                await db.refresh(lead)
+            except Exception as map_exc:
+                logger.warning(
+                    "Enrichment pipeline: apply_enrichment_mappings failed for lead %d: %s",
+                    lead_id,
+                    map_exc,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
 
         # Score and route — separate concern, isolated from enrichment errors
         try:

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import CustomFieldsManager from "../components/settings/CustomFieldsManager";
 import {
   fetchRoutingSettings,
   updateRoutingSettings,
@@ -10,6 +12,7 @@ import {
   setAiProvider,
 } from "../api/settings";
 import type { ApiKeyEntry, RoutingSettings } from "../types/settings";
+import { useAuth } from "../contexts/AuthContext";
 
 // ── Integration config ──────────────────────────────────────────────────────
 
@@ -49,6 +52,28 @@ type CardOp = {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function Settings() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+
+  // Members do not have access to Settings
+  if (user && user.role === "member") {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-center">
+        <p className="text-4xl mb-4">403</p>
+        <p className="text-lg font-semibold text-gray-800 mb-1">Access Denied</p>
+        <p className="text-sm text-gray-500 mb-6">
+          You don't have permission to access Settings.
+        </p>
+        <button
+          onClick={() => navigate("/")}
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+        >
+          Go to Dashboard
+        </button>
+      </div>
+    );
+  }
+
   // ── Existing state (untouched) ──
   const [routing, setRouting] = useState<RoutingSettings>({
     ghl_inbound_webhook_url: "",
@@ -405,7 +430,7 @@ export default function Settings() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-4xl">
       <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
 
       {/* ── API Keys & Integrations (FIRST) ── */}
@@ -477,6 +502,16 @@ export default function Settings() {
             </button>
           </div>
         )}
+      </div>
+      {/* ── Custom Fields ── */}
+      <div className="rounded-lg border border-gray-200 bg-white p-6">
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">Custom Fields</h2>
+          <p className="mt-0.5 text-xs text-gray-500">
+            Define custom data fields for leads and companies.
+          </p>
+        </div>
+        <CustomFieldsManager />
       </div>
     </div>
   );

@@ -1,9 +1,13 @@
 import asyncio
 import csv
 import io
+import logging
 import uuid
 from datetime import datetime
+from typing import Any
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
 from pydantic import ValidationError
@@ -23,6 +27,7 @@ from app.core.security import validate_webhook_url
 from app.schemas.export import ExportRequest, WebhookExportRequest, WebhookExportResponse
 from app.services import export as export_service
 from app.services.ai_enrichment import run_analysis_for_lead
+from app.schemas.custom_field import CustomFieldValuesUpdate
 from app.schemas.lead import (
     BulkImportResponse,
     BulkImportRow,
@@ -33,6 +38,7 @@ from app.schemas.lead import (
     LeadUpdate,
 )
 from app.services import lead as lead_service
+from app.services import custom_fields as cf_service
 from app.services.csv_mapping import detect_format, map_row
 from app.schemas.routing import RoutingResult
 from app.services.enrichment.queue import enqueue_enrichment
@@ -128,6 +134,18 @@ async def bulk_import(
             detail=f"CSV too large. Maximum {MAX_CSV_ROWS:,} data rows allowed (got {len(rows):,}).",
         )
 
+    # Fetch active custom field definitions once, before the row loop
+    lead_field_defs = await cf_service.get_field_definitions(db, client_id, "lead")
+    # Build lookup: normalized key/label → field_def (keys win over labels on collision)
+    _custom_by_label: dict[str, Any] = {fd.field_label.strip().lower(): fd for fd in lead_field_defs}
+    _custom_by_key: dict[str, Any] = {fd.field_key: fd for fd in lead_field_defs}
+    custom_field_lookup: dict[str, Any] = {**_custom_by_label, **_custom_by_key}
+
+    # Standard LeadCreate field names — don't treat these as custom fields
+    _STANDARD_LEAD_FIELDS = frozenset(
+        {"name", "email", "phone", "company", "title", "source", "apollo_id", "status", "enrichment_data"}
+    )
+
     valid_leads: list[LeadCreate] = []
     errors: list[BulkImportRow] = []
     total_rows = 0
@@ -136,6 +154,37 @@ async def bulk_import(
         total_rows += 1
         row = sanitize_csv_row(row)
         mapped = map_row(row, profile)
+
+        # Auto-map CSV columns that match a custom field key or label
+        custom_values: dict[str, Any] = {}
+        for csv_col, raw_val in row.items():
+            col_lower = csv_col.strip().lower()
+            if col_lower in _STANDARD_LEAD_FIELDS:
+                continue
+            fd = custom_field_lookup.get(col_lower)
+            if fd is None:
+                continue
+            # Empty cell → null (not empty string)
+            value = raw_val.strip() if isinstance(raw_val, str) else raw_val
+            if value == "":
+                value = None
+            if value is None:
+                continue
+            valid, msg = cf_service.validate_custom_field_value(fd, value)
+            if not valid:
+                logger.warning(
+                    "Bulk import row %d: custom field %r value %r invalid — %s",
+                    row_num, fd.field_key, value, msg,
+                )
+                continue
+            custom_values[fd.field_key] = value
+
+        if custom_values:
+            existing_enrichment = mapped.get("enrichment_data") or {}
+            existing_custom = existing_enrichment.get("custom_fields") or {}
+            merged_custom = {**existing_custom, **custom_values}
+            mapped["enrichment_data"] = {**existing_enrichment, "custom_fields": merged_custom}
+
         try:
             lead_data = LeadCreate(**mapped)
             valid_leads.append(lead_data)
@@ -275,7 +324,9 @@ async def enrich_lead(
         raise HTTPException(status_code=404, detail="Lead not found")
     if lead.enrichment_status == "enriching":
         raise HTTPException(status_code=409, detail="Enrichment already in progress")
-    lead.enrichment_data = None
+    # Preserve custom fields when clearing enrichment data for re-enrichment
+    existing_custom = (lead.enrichment_data or {}).get("custom_fields")
+    lead.enrichment_data = {"custom_fields": existing_custom} if existing_custom else None
     lead.enrichment_status = "pending"
     await db.commit()
     await db.refresh(lead)
@@ -332,6 +383,28 @@ async def trigger_ai_analysis(
 
     background_tasks.add_task(run_analysis_for_lead, lead_id, client_id)
     return {"message": "AI analysis started", "lead_id": lead_id, "status": "analyzing"}
+
+
+@router.patch("/{lead_id}/custom-fields", response_model=LeadResponse)
+async def update_lead_custom_fields(
+    lead_id: int,
+    data: CustomFieldValuesUpdate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set custom field values on a lead. Validates against active field definitions."""
+    from app.services import custom_fields as cf_service
+
+    lead = await lead_service.get_lead(db, lead_id, client_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    field_defs = await cf_service.get_field_definitions(db, client_id, "lead")
+    try:
+        lead = await cf_service.set_custom_field_values(db, lead, data.values, field_defs, client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return lead
 
 
 @router.delete("/{lead_id}", status_code=204)

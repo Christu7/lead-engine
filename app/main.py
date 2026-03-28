@@ -11,6 +11,7 @@ from app.core.logging_config import configure_logging
 configure_logging(settings.LOG_LEVEL)
 
 from app.api.admin import router as admin_router  # noqa: E402
+from app.api.custom_fields import router as custom_fields_router  # noqa: E402
 from app.api.auth import router as auth_router  # noqa: E402
 from app.api.companies import router as companies_router  # noqa: E402
 from app.api.clients import router as clients_router  # noqa: E402
@@ -133,3 +134,4 @@ app.include_router(routing_router, prefix="/api")
 app.include_router(scoring_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(webhooks_router, prefix="/api")
+app.include_router(custom_fields_router, prefix="/api")

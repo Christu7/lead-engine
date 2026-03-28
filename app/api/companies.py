@@ -14,6 +14,7 @@ from starlette.requests import Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_client_id, get_current_active_user, require_admin
 from app.core.input_validation import (
@@ -25,6 +26,7 @@ from app.core.input_validation import (
 from app.core.rate_limit import limiter
 from app.models.company import Company
 from app.models.lead import Lead
+from app.schemas.custom_field import CustomFieldValuesUpdate
 from app.schemas.company import (
     CompanyBulkUploadResponse,
     CompanyCreate,
@@ -287,11 +289,12 @@ async def bulk_upload_companies(
     summary="Queue all pending/failed companies for enrichment (admin only)",
 )
 async def bulk_enrich_companies(
-    background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
     _admin=Depends(require_admin),
 ) -> dict:
+    from app.services import task_queue
+
     result = await db.execute(
         select(Company).where(
             Company.client_id == client_id,
@@ -300,8 +303,15 @@ async def bulk_enrich_companies(
     )
     companies = result.scalars().all()
 
-    for company in companies:
-        background_tasks.add_task(_bg_enrich_one, company.id, client_id)
+    # Stagger task scores so they don't all become ready simultaneously.
+    # The worker's inter-task delay further prevents API flooding.
+    delay_step = settings.APOLLO_REQUEST_DELAY_MS / 1000.0
+    for i, company in enumerate(companies):
+        await task_queue.enqueue(
+            "company_enrichment",
+            {"company_id": str(company.id), "client_id": client_id, "retry_count": 0},
+            delay_seconds=i * delay_step,
+        )
 
     logger.info(
         "Bulk enrich queued",
@@ -391,6 +401,29 @@ async def update_company_endpoint(
         "Company updated",
         extra={"company_id": str(company_id), "client_id": client_id},
     )
+    resp = CompanyResponse.model_validate(company)
+    return resp
+
+
+@router.patch("/{company_id}/custom-fields", response_model=CompanyResponse, summary="Set custom field values on a company")
+async def update_company_custom_fields(
+    company_id: uuid.UUID,
+    data: CustomFieldValuesUpdate,
+    client_id: int = Depends(get_client_id),
+    db: AsyncSession = Depends(get_db),
+) -> CompanyResponse:
+    """Set custom field values on a company. Validates against active field definitions."""
+    from app.services import custom_fields as cf_service
+
+    company = await get_company(db, company_id, client_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    field_defs = await cf_service.get_field_definitions(db, client_id, "company")
+    try:
+        company = await cf_service.set_custom_field_values(db, company, data.values, field_defs, client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     resp = CompanyResponse.model_validate(company)
     return resp
 

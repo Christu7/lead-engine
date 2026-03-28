@@ -1,32 +1,64 @@
-import json
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import require_admin
+from app.core.deps import get_token_data, require_admin, require_superadmin
 from app.core.redis import redis as redis_client
-from app.core.security import hash_password
+from app.core.security import TokenData, hash_password
 from app.models.client import Client
 from app.models.user import User, UserClient
-from app.schemas.admin import AdminCreateUser, AdminUserResponse, AssignClientRequest
+from app.schemas.admin import (
+    AdminClientResponse,
+    AdminCreateUser,
+    AdminUpdateUserRole,
+    AdminUserResponse,
+    AssignClientRequest,
+)
 from app.services.ai_enrichment import run_analysis_for_lead
 from app.services.auth import get_user_by_email
 from app.services.dead_letter import DeadLetterService, DeadLetterType
-from app.services.enrichment.queue import QUEUE_KEY
+from app.services import task_queue
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+_VALID_ROLES = frozenset(["member", "admin", "superadmin"])
 
-@router.get("/users", response_model=list[AdminUserResponse], dependencies=[Depends(require_admin)])
-async def list_users(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).order_by(User.id))
+
+@router.get("/users", response_model=list[AdminUserResponse])
+async def list_users(
+    current_user: User = Depends(require_admin),
+    token_data: TokenData = Depends(get_token_data),
+    db: AsyncSession = Depends(get_db),
+):
+    """Superadmin sees all users. Admin sees only users in their active client."""
+    if current_user.role == "superadmin":
+        result = await db.execute(select(User).order_by(User.id))
+        return list(result.scalars().all())
+
+    # Per-client admin: return users assigned to the current active client only.
+    if token_data.active_client_id is None:
+        return []
+    result = await db.execute(
+        select(User)
+        .join(UserClient, User.id == UserClient.user_id)
+        .where(UserClient.client_id == token_data.active_client_id)
+        .distinct()
+        .order_by(User.id)
+    )
     return list(result.scalars().all())
 
 
-@router.post("/users", response_model=AdminUserResponse, status_code=201, dependencies=[Depends(require_admin)])
-async def create_user(data: AdminCreateUser, db: AsyncSession = Depends(get_db)):
+@router.post("/users", response_model=AdminUserResponse, status_code=201)
+async def create_user(
+    data: AdminCreateUser,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    # Admins can only set member/admin; superadmin can set any role.
+    allowed = {"member", "admin"} if current_user.role == "admin" else _VALID_ROLES
+    if data.role not in allowed:
+        raise HTTPException(status_code=400, detail=f"Role '{data.role}' not allowed for your permission level")
     existing = await get_user_by_email(db, data.email)
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -41,8 +73,39 @@ async def create_user(data: AdminCreateUser, db: AsyncSession = Depends(get_db))
     return user
 
 
-@router.post("/users/{user_id}/clients", status_code=201, dependencies=[Depends(require_admin)])
-async def assign_client(user_id: int, body: AssignClientRequest, db: AsyncSession = Depends(get_db)):
+@router.patch("/users/{user_id}/role", response_model=AdminUserResponse)
+async def update_user_role(
+    user_id: int,
+    body: AdminUpdateUserRole,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a user's role. Admins can set member/admin. Superadmin can set any role."""
+    allowed = {"member", "admin"} if current_user.role == "admin" else _VALID_ROLES
+    if body.role not in allowed:
+        raise HTTPException(status_code=400, detail=f"Role '{body.role}' not allowed for your permission level")
+
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent a regular admin from modifying a superadmin
+    if current_user.role == "admin" and target.role == "superadmin":
+        raise HTTPException(status_code=403, detail="Cannot modify a superadmin")
+
+    target.role = body.role
+    await db.commit()
+    await db.refresh(target)
+    return target
+
+
+@router.post("/users/{user_id}/clients", status_code=201)
+async def assign_client(
+    user_id: int,
+    body: AssignClientRequest,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -66,8 +129,13 @@ async def assign_client(user_id: int, body: AssignClientRequest, db: AsyncSessio
     return {"user_id": user_id, "client_id": body.client_id}
 
 
-@router.delete("/users/{user_id}/clients/{client_id}", status_code=204, dependencies=[Depends(require_admin)])
-async def unassign_client(user_id: int, client_id: int, db: AsyncSession = Depends(get_db)):
+@router.delete("/users/{user_id}/clients/{client_id}", status_code=204)
+async def unassign_client(
+    user_id: int,
+    client_id: int,
+    _: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(UserClient).where(
             UserClient.user_id == user_id,
@@ -79,6 +147,38 @@ async def unassign_client(user_id: int, client_id: int, db: AsyncSession = Depen
         raise HTTPException(status_code=404, detail="Assignment not found")
     await db.delete(uc)
     await db.commit()
+
+
+@router.get("/clients", response_model=list[AdminClientResponse])
+async def list_clients(
+    _: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Superadmin only — list all clients with user counts."""
+    rows = await db.execute(
+        select(Client, func.count(UserClient.user_id).label("user_count"))
+        .outerjoin(UserClient, Client.id == UserClient.client_id)
+        .group_by(Client.id)
+        .order_by(Client.id)
+    )
+    return [
+        AdminClientResponse(
+            id=client.id,
+            name=client.name,
+            user_count=count,
+            created_at=client.created_at,
+        )
+        for client, count in rows.all()
+    ]
+
+
+@router.get("/queue-stats", dependencies=[Depends(require_superadmin)])
+async def get_queue_stats():
+    """Return current task queue statistics. Superadmin only."""
+    q_stats = await task_queue.stats()
+    svc = DeadLetterService(redis_client)
+    dead_letters = await svc.list()
+    return {**q_stats, "dead_letter": len(dead_letters)}
 
 
 @router.get("/dead-letters", dependencies=[Depends(require_admin)])
@@ -105,8 +205,10 @@ async def retry_dead_letter(
     client_id = entry["client_id"]
 
     if dl_type == DeadLetterType.ENRICHMENT:
-        payload = json.dumps({"lead_id": lead_id, "client_id": client_id})
-        await redis_client.lpush(QUEUE_KEY, payload)
+        await task_queue.enqueue(
+            "lead_enrichment",
+            {"lead_id": lead_id, "client_id": client_id, "retry_count": 0},
+        )
     elif dl_type == DeadLetterType.AI_ANALYSIS:
         background_tasks.add_task(run_analysis_for_lead, lead_id, client_id)
     elif dl_type == DeadLetterType.ROUTING:

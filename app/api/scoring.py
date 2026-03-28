@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_client_id, get_current_active_user
+from app.core.deps import get_client_id, get_current_active_user, require_admin
 from app.schemas.scoring import (
     ScoringRuleCreate,
     ScoringRuleListResponse,
@@ -15,7 +15,7 @@ from app.services import scoring as scoring_service
 router = APIRouter(
     prefix="/scoring-rules",
     tags=["scoring"],
-    dependencies=[Depends(get_current_active_user)],
+    dependencies=[Depends(get_current_active_user), Depends(require_admin)],
 )
 
 

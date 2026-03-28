@@ -5,6 +5,7 @@ interface AuthContextValue {
   token: string | null;
   user: AuthUser | null;
   isAuthenticated: boolean;
+  clientVersion: number;
   login: (email: string, password: string) => Promise<void>;
   loginWithToken: (token: string) => void;
   switchClient: (clientId: number) => Promise<void>;
@@ -16,6 +17,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [clientVersion, setClientVersion] = useState(0);
 
   const loadUser = useCallback(async () => {
     try {
@@ -49,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const newToken = await apiSwitchClient(clientId);
     localStorage.setItem("token", newToken);
     setToken(newToken);
+    setClientVersion((v) => v + 1);
   }, []);
 
   const logout = useCallback(() => {
@@ -58,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ token, user, isAuthenticated: !!token, login, loginWithToken, switchClient, logout }}>
+    <AuthContext.Provider value={{ token, user, isAuthenticated: !!token, clientVersion, login, loginWithToken, switchClient, logout }}>
       {children}
     </AuthContext.Provider>
   );

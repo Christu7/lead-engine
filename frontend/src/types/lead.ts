@@ -1,3 +1,5 @@
+import type { CustomFieldValues } from "./custom_field";
+
 export interface Lead {
   id: number;
   client_id: number;
@@ -17,6 +19,7 @@ export interface Lead {
   ai_status: "analyzing" | "completed" | "failed" | null;
   created_at: string;
   updated_at: string;
+  custom_fields: CustomFieldValues;
 }
 
 export interface AIQualification {

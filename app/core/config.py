@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "anthropic"
     DEBUG: bool = False
     TEST_DATABASE_URL: str = ""
+    APOLLO_RATE_LIMIT_PER_MINUTE: int = 10
+    ANTHROPIC_RATE_LIMIT_PER_MINUTE: int = 20
+    APOLLO_REQUEST_DELAY_MS: int = 500
 
     model_config = {"env_file": ".env"}
 

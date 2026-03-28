@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -11,6 +11,33 @@ import type { Company } from "../types/company";
 import CompanyDetailPanel from "../components/companies/CompanyDetailPanel";
 import AddCompanyModal from "../components/companies/AddCompanyModal";
 import CsvUploadModal from "../components/companies/CsvUploadModal";
+import { getCustomFieldDefinitions } from "../api/custom_fields";
+import type { CustomFieldDefinition } from "../types/custom_field";
+
+function renderCustomFieldCell(fieldType: string, value: unknown): React.ReactNode {
+  if (value == null) return <span className="text-gray-400">—</span>;
+  switch (fieldType) {
+    case "text": {
+      const s = String(value);
+      return s.length > 50
+        ? <span title={s}>{s.slice(0, 50)}…</span>
+        : <span>{s}</span>;
+    }
+    case "number":
+      return <span className="tabular-nums">{Number(value).toLocaleString()}</span>;
+    case "date":
+      try { return <span>{new Date(String(value)).toLocaleDateString()}</span>; }
+      catch { return <span>{String(value)}</span>; }
+    case "boolean":
+      return value
+        ? <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">Yes</span>
+        : <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">No</span>;
+    case "select":
+      return <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">{String(value)}</span>;
+    default:
+      return <span>{String(value)}</span>;
+  }
+}
 
 const col = createColumnHelper<Company>();
 
@@ -91,6 +118,13 @@ export default function Companies() {
   const [bulkEnriching, setBulkEnriching] = useState(false);
   const [enrichingSelected, setEnrichingSelected] = useState(false);
 
+  // Custom field definitions
+  const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
+
+  useEffect(() => {
+    getCustomFieldDefinitions("company").then(setCustomFieldDefs).catch(() => {});
+  }, []); // fetch once on mount
+
   // Pull Contacts state
   const [showPullPopover, setShowPullPopover] = useState(false);
   const [pullSeniorities, setPullSeniorities] = useState<string[]>(["vp", "director", "c_suite"]);
@@ -98,6 +132,15 @@ export default function Companies() {
   const [pullLimit, setPullLimit] = useState(25);
   const [pullingContacts, setPullingContacts] = useState(false);
   const [pullProgress, setPullProgress] = useState("");
+
+  const tablePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopTablePolling = () => {
+    if (tablePollRef.current !== null) {
+      clearInterval(tablePollRef.current);
+      tablePollRef.current = null;
+    }
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -126,6 +169,22 @@ export default function Companies() {
     fetchCompanies();
   }, [fetchCompanies]);
 
+  // Poll every 5 s while any visible company is still enriching
+  useEffect(() => {
+    const anyEnriching = companies.some((c) => c.enrichment_status === "enriching");
+    if (anyEnriching) {
+      if (tablePollRef.current === null) {
+        tablePollRef.current = setInterval(fetchCompanies, 5000);
+      }
+    } else {
+      stopTablePolling();
+    }
+    return stopTablePolling;
+  }, [companies, fetchCompanies]);
+
+  // Ensure interval is cleared on unmount regardless of companies state
+  useEffect(() => stopTablePolling, []);
+
   // Reset to page 0 when filters change
   useEffect(() => {
     setSkip(0);
@@ -143,7 +202,7 @@ export default function Companies() {
   }, [companies, search]);
 
   // ── Table columns ──
-  const columns = [
+  const columns = useMemo(() => [
     col.display({
       id: "select",
       header: ({ table }) => (
@@ -206,7 +265,17 @@ export default function Companies() {
       header: "Created",
       cell: (info) => relativeDate(info.getValue()),
     }),
-  ];
+    ...(customFieldDefs).filter(fd => fd.show_in_table).map(fd =>
+      col.display({
+        id: `custom_${fd.field_key}`,
+        header: fd.field_label,
+        cell: ({ row }) => {
+          const val = (row.original.custom_fields ?? {})[fd.field_key];
+          return renderCustomFieldCell(fd.field_type, val);
+        },
+      })
+    ),
+  ], [customFieldDefs]);
 
   const table = useReactTable({
     data: filtered,

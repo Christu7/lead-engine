@@ -228,6 +228,19 @@ class ApolloCompanyEnrichmentService:
             },
         )
 
+        # Auto-fill custom fields from enrichment response
+        try:
+            from app.services.custom_fields import apply_enrichment_mappings
+            await apply_enrichment_mappings(db, company, body, client_id, "company")
+            await db.refresh(company)
+        except Exception as map_exc:
+            logger.warning(
+                "Apollo org enrichment: apply_enrichment_mappings failed for company %s: %s",
+                str(company.id),
+                map_exc,
+                extra={"company_id": str(company.id), "client_id": client_id},
+            )
+
         await auto_link_leads_by_domain(db, company, client_id)
 
         return company
