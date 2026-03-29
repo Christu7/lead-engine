@@ -16,7 +16,7 @@ from app.schemas.admin import (
     AssignClientRequest,
 )
 from app.services.ai_enrichment import run_analysis_for_lead
-from app.services.auth import get_user_by_email
+from app.services.auth import get_user_by_email, invalidate_user_tokens
 from app.services.dead_letter import DeadLetterService, DeadLetterType
 from app.services import task_queue
 
@@ -103,9 +103,20 @@ async def update_user_role(
 async def assign_client(
     user_id: int,
     body: AssignClientRequest,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    # MT-2: non-superadmin admins may only assign users to clients they belong to.
+    if current_user.role != "superadmin":
+        access_check = await db.execute(
+            select(UserClient).where(
+                UserClient.user_id == current_user.id,
+                UserClient.client_id == body.client_id,
+            )
+        )
+        if access_check.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="You do not have access to that client")
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -133,9 +144,20 @@ async def assign_client(
 async def unassign_client(
     user_id: int,
     client_id: int,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    # MT-2: non-superadmin admins may only unassign users from clients they belong to.
+    if current_user.role != "superadmin":
+        access_check = await db.execute(
+            select(UserClient).where(
+                UserClient.user_id == current_user.id,
+                UserClient.client_id == client_id,
+            )
+        )
+        if access_check.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="You do not have access to that client")
+
     result = await db.execute(
         select(UserClient).where(
             UserClient.user_id == user_id,
@@ -147,6 +169,8 @@ async def unassign_client(
         raise HTTPException(status_code=404, detail="Assignment not found")
     await db.delete(uc)
     await db.commit()
+    # P1-2: bump token_version so any JWT the removed user holds is immediately rejected.
+    await invalidate_user_tokens(db, user_id)
 
 
 @router.get("/clients", response_model=list[AdminClientResponse])
@@ -181,18 +205,35 @@ async def get_queue_stats():
     return {**q_stats, "dead_letter": len(dead_letters)}
 
 
-@router.get("/dead-letters", dependencies=[Depends(require_admin)])
-async def list_dead_letters():
-    """List all entries currently in the dead letter queue, newest first."""
+@router.get("/dead-letters")
+async def list_dead_letters(
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List dead letter entries visible to the requesting admin, newest first.
+
+    Superadmin sees all entries. Per-client admins see only entries belonging
+    to clients they are assigned to.
+    """
+    if current_user.role == "superadmin":
+        client_ids = None  # no filter
+    else:
+        rows = await db.execute(
+            select(UserClient.client_id).where(UserClient.user_id == current_user.id)
+        )
+        client_ids = list(rows.scalars().all())
+
     svc = DeadLetterService(redis_client)
-    entries = await svc.list()
+    entries = await svc.list(client_ids=client_ids)
     return {"count": len(entries), "dead_letters": entries}
 
 
-@router.post("/dead-letters/{entry_id}/retry", dependencies=[Depends(require_admin)])
+@router.post("/dead-letters/{entry_id}/retry")
 async def retry_dead_letter(
     entry_id: str,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ):
     """Re-queue a dead letter entry for reprocessing, then dismiss it."""
     svc = DeadLetterService(redis_client)
@@ -201,8 +242,24 @@ async def retry_dead_letter(
         raise HTTPException(status_code=404, detail="Dead letter entry not found")
 
     dl_type = entry.get("type")
-    lead_id = entry["lead_id"]
-    client_id = entry["client_id"]
+    lead_id = entry.get("lead_id")
+    client_id = entry.get("client_id")
+    if lead_id is None or client_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Dead letter entry is malformed: missing lead_id or client_id",
+        )
+
+    # MT-1: verify the requesting admin has access to this entry's client.
+    if current_user.role != "superadmin":
+        access_check = await db.execute(
+            select(UserClient).where(
+                UserClient.user_id == current_user.id,
+                UserClient.client_id == client_id,
+            )
+        )
+        if access_check.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="You do not have access to this dead letter entry")
 
     if dl_type == DeadLetterType.ENRICHMENT:
         await task_queue.enqueue(

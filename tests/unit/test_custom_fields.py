@@ -4,6 +4,7 @@ DB interactions are mocked. Tests cover:
 - safe_extract_path: dot-notation extraction, array indexing, edge cases
 - validate_custom_field_value: all field types
 - apply_enrichment_mappings: happy path + skips missing/invalid values
+- _count_records_with_values: parameterized query (no SQL injection)
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.custom_fields import (
     safe_extract_path,
     validate_custom_field_value,
+    _count_records_with_values,
 )
 from app.models.custom_field import CustomFieldDefinition
 
@@ -323,3 +325,52 @@ class TestApplyEnrichmentMappings:
             await apply_enrichment_mappings(db, entity, enrichment_data, 1, "company")
 
         db.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _count_records_with_values — parameterized query (no SQL injection)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestCountRecordsWithValues:
+
+    async def test_returns_zero_for_empty_value_list(self):
+        db = MagicMock()
+        db.execute = AsyncMock()
+        result = await _count_records_with_values(db, "leads", "status", 1, [])
+        assert result == 0
+        db.execute.assert_not_called()
+
+    async def test_single_quote_in_option_does_not_break_query(self):
+        """A select option containing a single quote must not cause SQL errors."""
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = 0
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=mock_result)
+
+        # This would cause a syntax error if the value were interpolated directly
+        await _count_records_with_values(db, "leads", "tier", 1, ["O'Brien tier", "standard"])
+
+        db.execute.assert_called_once()
+        call_args = db.execute.call_args
+        params = call_args[0][1]  # second positional arg is the params dict
+        # Values must be passed as bound parameters, not baked into the SQL string
+        assert any("O'Brien tier" == v for v in params.values())
+
+    async def test_multiple_values_all_parameterized(self):
+        """Each value in the list gets its own bind parameter."""
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = 3
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=mock_result)
+
+        result = await _count_records_with_values(db, "companies", "plan", 2, ["free", "pro", "enterprise"])
+
+        assert result == 3
+        call_args = db.execute.call_args
+        params = call_args[0][1]
+        param_values = set(params.values())
+        assert "free" in param_values
+        assert "pro" in param_values
+        assert "enterprise" in param_values

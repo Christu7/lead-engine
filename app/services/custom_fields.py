@@ -12,7 +12,7 @@ from typing import Any
 
 _ARRAY_INDEX_RE = re.compile(r"^([^\[]+)\[(\d+)\]$")
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.custom_field import CustomFieldDefinition
@@ -415,13 +415,15 @@ async def _count_records_with_values(
     """Count records whose custom field value is in the given list."""
     if not value_in:
         return 0
-    placeholders = ", ".join(f"'{v}'" for v in value_in)
+    # Build parameterized placeholders to avoid SQL injection
+    value_params = {f"v{i}": v for i, v in enumerate(value_in)}
+    in_clause = ", ".join(f":v{i}" for i in range(len(value_in)))
     stmt = text(f"""
         SELECT COUNT(*) FROM {table}
         WHERE client_id = :client_id
-          AND enrichment_data->'custom_fields'->>:field_key IN ({placeholders})
-    """)  # nosec — placeholders built from admin-controlled options list, not user input
-    result = await db.execute(stmt, {"client_id": client_id, "field_key": field_key})
+          AND enrichment_data->'custom_fields'->>:field_key IN ({in_clause})
+    """)
+    result = await db.execute(stmt, {"client_id": client_id, "field_key": field_key, **value_params})
     return result.scalar_one()
 
 

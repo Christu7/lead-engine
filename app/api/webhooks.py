@@ -108,8 +108,9 @@ async def typeform_webhook(
         await webhook_service.mark_log_failed(db, log, str(exc))
         raise HTTPException(status_code=422, detail=str(exc))
 
-    # create_lead calls enqueue_enrichment — no separate background task needed
-    lead = await lead_service.create_lead(db, lead_data, client_id)
+    # upsert_lead deduplicates by email: a repeated form submission updates
+    # the existing lead rather than creating a duplicate.
+    lead, _ = await lead_service.upsert_lead(db, lead_data, client_id)
     await webhook_service.mark_log_processed(db, log, lead.id)
     return lead
 

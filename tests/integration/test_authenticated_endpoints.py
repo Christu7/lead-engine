@@ -128,3 +128,42 @@ class TestDashboardStatsEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["total_leads"] >= 1
+
+
+@pytest.mark.integration
+class TestClientOwnershipChecks:
+    """MT-2: admins may only assign/unassign users to clients they belong to."""
+
+    async def test_admin_cannot_assign_user_to_foreign_client(
+        self, admin_client, db_session, seeded_users
+    ):
+        """Admin of Client A gets 403 when assigning a user to Client B."""
+        from app.models.client import Client
+
+        client_b = Client(name="Client B", settings={})
+        db_session.add(client_b)
+        await db_session.commit()
+        await db_session.refresh(client_b)
+
+        resp = await admin_client.post(
+            f"/api/admin/users/{seeded_users['member'].id}/clients",
+            json={"client_id": client_b.id},
+        )
+        assert resp.status_code == 403
+
+    async def test_superadmin_can_assign_user_to_any_client(
+        self, superadmin_client, db_session, seeded_superadmin, seeded_users
+    ):
+        """Superadmin bypasses the ownership check and can assign to any client."""
+        from app.models.client import Client
+
+        client_b = Client(name="Client B", settings={})
+        db_session.add(client_b)
+        await db_session.commit()
+        await db_session.refresh(client_b)
+
+        resp = await superadmin_client.post(
+            f"/api/admin/users/{seeded_users['member'].id}/clients",
+            json={"client_id": client_b.id},
+        )
+        assert resp.status_code == 201

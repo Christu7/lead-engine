@@ -56,8 +56,12 @@ class DeadLetterService:
             raise DeadLetterError(f"Failed to write dead letter entry: {exc}") from exc
         return entry_id
 
-    async def list(self, limit: int = 100) -> list[dict]:
-        """Return up to `limit` dead letter entries, newest first."""
+    async def list(self, limit: int = 100, client_ids: list[int] | None = None) -> list[dict]:
+        """Return up to `limit` dead letter entries, newest first.
+
+        If `client_ids` is provided, only entries whose client_id is in that
+        list are returned.  Pass None to return all entries (superadmin use).
+        """
         try:
             entry_ids = await self._redis.zrevrange(DL_INDEX_KEY, 0, limit - 1)
         except Exception as exc:
@@ -68,11 +72,14 @@ class DeadLetterService:
             raw = await self._redis.get(f"{DL_ENTRY_PREFIX}{eid}")
             if raw:
                 try:
-                    entries.append(json.loads(raw))
+                    entry = json.loads(raw)
                 except json.JSONDecodeError:
                     logger.warning(
                         "Dead letter entry %s has invalid JSON — skipping", eid
                     )
+                    continue
+                if client_ids is None or entry.get("client_id") in client_ids:
+                    entries.append(entry)
             else:
                 # Entry has expired (TTL elapsed) but the index still holds its ID.
                 # Clean up the orphaned reference so the index stays accurate.

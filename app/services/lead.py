@@ -1,7 +1,8 @@
 import logging
 from datetime import datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -187,45 +188,95 @@ async def get_leads_by_apollo_ids(db: AsyncSession, apollo_ids: list[str], clien
     return {lead.apollo_id: lead for lead in result.scalars().all()}
 
 
+def _build_upsert_update_set(values: dict) -> dict:
+    """Build the SET clause for ON CONFLICT DO UPDATE.
+
+    - Skips id, client_id, created_at (must not be overwritten).
+    - Skips None values (never overwrite an existing value with NULL).
+    - enrichment_data uses a JSONB merge expression (shallow update, not replace).
+    """
+    skip = {"id", "client_id", "created_at"}
+    update_set = {
+        k: v for k, v in values.items()
+        if k not in skip and k != "enrichment_data" and v is not None
+    }
+    # Merge JSONB only when incoming data is non-NULL.
+    # Omitting enrichment_data from SET when it is None lets PostgreSQL preserve
+    # the existing column value without any CASE expression — avoids the asyncpg
+    # behaviour where Python None is sent as 'null'::jsonb (not SQL NULL) for
+    # JSONB parameters, which caused excluded.enrichment_data IS NOT NULL to fire
+    # and produce an unexpected result from the || operator.
+    if values.get("enrichment_data") is not None:
+        update_set["enrichment_data"] = text(
+            "COALESCE(leads.enrichment_data, '{}'::jsonb) || excluded.enrichment_data"
+        )
+    return update_set
+
+
 async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tuple[Lead, str]:
-    """Create or update a single lead. Checks by apollo_id first, then email.
+    """Create or update a single lead. Checks by apollo_id first, then uses
+    INSERT ... ON CONFLICT (email, client_id) DO UPDATE to atomically handle
+    the email-based upsert without a SELECT-then-INSERT race condition.
 
     Returns (lead, action) where action is 'created' or 'updated'.
     """
-    existing: Lead | None = None
-
+    # Apollo ID: still requires a SELECT because the partial unique index
+    # (apollo_id, client_id WHERE apollo_id IS NOT NULL) can't be used as the
+    # ON CONFLICT target together with the email constraint in one statement.
     if data.apollo_id:
         result = await db.execute(
             select(Lead).where(Lead.apollo_id == data.apollo_id, Lead.client_id == client_id)
         )
         existing = result.scalar_one_or_none()
+        if existing is not None:
+            for key, value in data.model_dump(exclude_unset=True).items():
+                if key == "enrichment_data" and value is not None:
+                    merged = dict(existing.enrichment_data or {})
+                    merged.update(value)
+                    existing.enrichment_data = merged
+                elif value is not None:
+                    setattr(existing, key, value)
+            await db.commit()
+            await db.refresh(existing)
+            await _try_auto_link_company(db, existing, client_id)
+            return existing, "updated"
 
-    if existing is None:
-        result = await db.execute(
-            select(Lead).where(Lead.email == data.email, Lead.client_id == client_id)
+    # Pre-check: used only for action-label reporting ("created" vs "updated").
+    # The unique constraint + ON CONFLICT below is what prevents duplicates —
+    # the race window here only affects the metadata, not correctness.
+    pre_existing_id = (
+        await db.execute(
+            select(Lead.id).where(Lead.email == data.email, Lead.client_id == client_id)
         )
-        existing = result.scalar_one_or_none()
+    ).scalar_one_or_none()
 
-    if existing is None:
-        lead = Lead(**data.model_dump(), client_id=client_id)
-        db.add(lead)
-        await db.commit()
-        await db.refresh(lead)
-        await _safe_enqueue(lead.id, client_id)
-        await _try_auto_link_company(db, lead, client_id)
-        return lead, "created"
-
-    for key, value in data.model_dump(exclude_unset=True).items():
-        if key == "enrichment_data" and value is not None:
-            merged = dict(existing.enrichment_data or {})
-            merged.update(value)
-            existing.enrichment_data = merged
-        elif value is not None:
-            setattr(existing, key, value)
+    # Atomic upsert on (email, client_id).
+    # Use Lead.__table__ (Core, not ORM) so SQLAlchemy does NOT attempt to map
+    # the result back to a Lead ORM object — that would corrupt the identity map
+    # and cause subsequent SELECTs to return stale/partial data.
+    values = {**data.model_dump(), "client_id": client_id}
+    stmt = (
+        pg_insert(Lead.__table__)
+        .values(**values)
+        .on_conflict_do_update(
+            constraint="uq_lead_email_client",
+            set_=_build_upsert_update_set(values),
+        )
+    )
+    await db.execute(stmt)
     await db.commit()
-    await db.refresh(existing)
-    await _try_auto_link_company(db, existing, client_id)
-    return existing, "updated"
+
+    result = await db.execute(
+        select(Lead).where(Lead.email == data.email, Lead.client_id == client_id)
+    )
+    lead = result.scalar_one()
+    was_updated = pre_existing_id is not None
+
+    action = "updated" if was_updated else "created"
+    if not was_updated:
+        await _safe_enqueue(lead.id, client_id)
+    await _try_auto_link_company(db, lead, client_id)
+    return lead, action
 
 
 async def bulk_upsert_leads(
@@ -236,12 +287,15 @@ async def bulk_upsert_leads(
 ) -> dict[str, int]:
     """Insert leads with duplicate handling. Checks apollo_id first, then email.
 
+    Uses INSERT ... ON CONFLICT to handle races in the window between the
+    pre-fetch and the actual insert.
+
     Returns {"created": N, "updated": N, "skipped": N}.
     """
     created = 0
     updated = 0
     skipped = 0
-    new_leads: list[Lead] = []
+    new_lead_ids: list[int] = []
 
     apollo_ids = [ld.apollo_id for ld in leads_data if ld.apollo_id]
     emails = [ld.email.lower() for ld in leads_data]
@@ -254,10 +308,39 @@ async def bulk_upsert_leads(
         ) or by_email.get(data.email.lower())
 
         if existing_lead is None:
-            lead = Lead(**data.model_dump(), client_id=client_id)
-            db.add(lead)
-            new_leads.append(lead)
-            created += 1
+            values = {**data.model_dump(), "client_id": client_id}
+            if on_duplicate == "update":
+                # Atomic upsert — handles races in the pre-fetch window.
+                # Lead.__table__ avoids ORM identity-map pollution (same reason as upsert_lead).
+                stmt = (
+                    pg_insert(Lead.__table__)
+                    .values(**values)
+                    .on_conflict_do_update(
+                        constraint="uq_lead_email_client",
+                        set_=_build_upsert_update_set(values),
+                    )
+                    .returning(text("id"), text("(xmax <> 0) as was_updated"))
+                )
+                row = (await db.execute(stmt)).first()
+                if bool(row[1]):
+                    updated += 1
+                else:
+                    new_lead_ids.append(row[0])
+                    created += 1
+            else:
+                # skip mode: DO NOTHING on email conflict — still atomic
+                stmt = (
+                    pg_insert(Lead.__table__)
+                    .values(**values)
+                    .on_conflict_do_nothing()
+                    .returning(text("id"))
+                )
+                row = (await db.execute(stmt)).first()
+                if row:
+                    new_lead_ids.append(row[0])
+                    created += 1
+                else:
+                    skipped += 1  # concurrent insert or pre-fetch miss
         elif on_duplicate == "update":
             for key, value in data.model_dump(exclude_unset=True).items():
                 if key == "enrichment_data" and value is not None:
@@ -272,7 +355,7 @@ async def bulk_upsert_leads(
 
     await db.commit()
 
-    for lead in new_leads:
-        await _safe_enqueue(lead.id, client_id)
+    for lead_id in new_lead_ids:
+        await _safe_enqueue(lead_id, client_id)
 
     return {"created": created, "updated": updated, "skipped": skipped}

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,11 +44,19 @@ class Lead(Base):
     routing_logs: Mapped[list["RoutingLog"]] = relationship(back_populates="lead")
 
     __table_args__ = (
+        UniqueConstraint("email", "client_id", name="uq_lead_email_client"),
         Index("ix_leads_email", "email"),
         Index("ix_leads_source", "source"),
         Index("ix_leads_status", "status"),
         Index("ix_leads_client_id", "client_id"),
         Index("ix_leads_enrichment_status", "enrichment_status"),
+        Index(
+            "ix_leads_apollo_id_client_unique",
+            "apollo_id",
+            "client_id",
+            unique=True,
+            postgresql_where=text("apollo_id IS NOT NULL"),
+        ),
         Index("ix_leads_apollo_id", "apollo_id"),
         Index("ix_leads_company_id", "company_id"),
     )

@@ -188,6 +188,12 @@ def admin_token() -> str:
     return _make_token(user_id=2, role="admin", client_id=1)
 
 
+@pytest.fixture
+def superadmin_token() -> str:
+    # Superadmin is the third user inserted: member=1, admin=2, superadmin=3.
+    return _make_token(user_id=3, role="superadmin", client_id=1)
+
+
 @pytest_asyncio.fixture
 async def seeded_users(db_session, seeded_client):
     """Insert a member (id=1) and admin (id=2) user, both linked to seeded_client.
@@ -233,6 +239,37 @@ async def authenticated_client(http_client, member_token, seeded_users):
 async def admin_client(http_client, admin_token, seeded_users):
     """HTTP client authenticated as an admin user (user row seeded in DB)."""
     http_client.headers.update(_auth_headers(admin_token))
+    return http_client
+
+
+@pytest_asyncio.fixture
+async def seeded_superadmin(db_session, seeded_users, seeded_client):
+    """Insert a superadmin (id=3) linked to seeded_client.
+
+    Depends on seeded_users so member(1) and admin(2) are already inserted,
+    guaranteeing this user gets id=3 with RESTART IDENTITY.
+    """
+    from app.core.security import hash_password
+    from app.models.user import User, UserClient
+
+    superadmin = User(
+        email="superadmin@test.com",
+        hashed_password=hash_password("test"),
+        role="superadmin",
+        is_active=True,
+    )
+    db_session.add(superadmin)
+    await db_session.commit()
+    await db_session.refresh(superadmin)
+    db_session.add(UserClient(user_id=superadmin.id, client_id=seeded_client.id))
+    await db_session.commit()
+    return superadmin
+
+
+@pytest_asyncio.fixture
+async def superadmin_client(http_client, superadmin_token, seeded_superadmin):
+    """HTTP client authenticated as a superadmin user (user row seeded in DB)."""
+    http_client.headers.update(_auth_headers(superadmin_token))
     return http_client
 
 

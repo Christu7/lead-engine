@@ -90,23 +90,38 @@ async def nack_transient(raw: str, delay_seconds: float, new_retry_count: int) -
     await nack_rate_limited(raw, delay_seconds, new_retry_count)
 
 
+_RECOVER_LOCK_KEY = "task_queue:recover_lock"
+_RECOVER_LOCK_TTL = 30  # seconds
+
+
 async def recover_stranded() -> int:
     """On startup, re-enqueue any tasks stranded in the processing set.
 
     Handles the case where the worker crashed while processing a task.
+    Uses a Redis SETNX lock so only one worker runs recovery at a time
+    (prevents double-enqueuing when multiple workers restart simultaneously).
     """
-    stranded = await redis.zrangebyscore(TASK_PROCESSING_KEY, "-inf", "+inf")
-    if not stranded:
+    acquired = await redis.set(_RECOVER_LOCK_KEY, "1", nx=True, ex=_RECOVER_LOCK_TTL)
+    if not acquired:
+        logger.info("recover_stranded: lock held by another worker, skipping")
         return 0
 
-    now = time.time()
-    async with redis.pipeline() as pipe:
-        for item in stranded:
-            pipe.zrem(TASK_PROCESSING_KEY, item)
-            pipe.zadd(TASK_QUEUE_KEY, {item: now})
-        await pipe.execute()
+    try:
+        stranded = await redis.zrangebyscore(TASK_PROCESSING_KEY, "-inf", "+inf")
+        if not stranded:
+            return 0
 
-    return len(stranded)
+        now = time.time()
+        async with redis.pipeline() as pipe:
+            for item in stranded:
+                pipe.zrem(TASK_PROCESSING_KEY, item)
+                pipe.zadd(TASK_QUEUE_KEY, {item: now})
+            await pipe.execute()
+
+        logger.info("recover_stranded: re-enqueued %d stranded tasks", len(stranded))
+        return len(stranded)
+    finally:
+        await redis.delete(_RECOVER_LOCK_KEY)
 
 
 async def migrate_legacy_list_queue() -> int:

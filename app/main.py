@@ -65,6 +65,16 @@ async def lifespan(app: FastAPI):
                 "ENCRYPTION_KEY is not set. "
                 "Set a strong random ENCRYPTION_KEY in your environment before deploying."
             )
+        if "localhost" in settings.BACKEND_URL:
+            raise RuntimeError(
+                "BACKEND_URL must not point to localhost in production. "
+                "Set BACKEND_URL to your production backend URL."
+            )
+        if "localhost" in settings.FRONTEND_URL:
+            raise RuntimeError(
+                "FRONTEND_URL must not point to localhost in production. "
+                "Set FRONTEND_URL to your production frontend URL."
+            )
     yield
 
 

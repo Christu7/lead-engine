@@ -35,9 +35,3 @@ async def enqueue_enrichment_delayed(
     )
 
 
-async def flush_delayed_queue() -> int:
-    """No-op: the sorted-set task_queue handles scheduling natively.
-
-    Kept for backward compatibility with imports that call this function.
-    """
-    return 0

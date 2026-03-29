@@ -85,6 +85,18 @@ async def get_default_client_id(db: AsyncSession, user_id: int, role: str) -> in
     return clients[0].id if clients else None
 
 
+async def invalidate_user_tokens(db: AsyncSession, user_id: int) -> None:
+    """Bump token_version so all currently-issued JWTs for this user are rejected.
+
+    Called when a user is removed from a client so their existing tokens
+    (which still embed the old client_id) are immediately invalidated.
+    """
+    user = await get_user_by_id(db, user_id)
+    if user is not None:
+        user.token_version = (user.token_version or 1) + 1
+        await db.commit()
+
+
 async def get_api_key(db: AsyncSession, key: str) -> ApiKey | None:
     """Look up an API key by comparing SHA-256 hashes.
 

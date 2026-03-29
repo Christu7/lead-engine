@@ -119,12 +119,11 @@ class TestTypeformWebhook:
         )
         assert resp.status_code == 422
 
-    async def test_duplicate_email_does_not_create_second_lead(
+    async def test_duplicate_email_upserts_instead_of_creating(
         self, http_client, db_session, seeded_api_key
     ):
-        """Typeform creates leads via create_lead which does NOT upsert.
-        Two identical POSTs should create two separate entries (no dedup on typeform).
-        This tests current behavior — if upsert is added later, update this test.
+        """Typeform now uses upsert_lead — a repeated form submission updates the
+        existing lead instead of creating a duplicate row.
         """
         for _ in range(2):
             resp = await http_client.post(
@@ -138,8 +137,7 @@ class TestTypeformWebhook:
             select(Lead).where(Lead.email == "alice@example.com")
         )
         leads = result.scalars().all()
-        # typeform creates, not upserts → two rows
-        assert len(leads) == 2
+        assert len(leads) == 1
 
 
 # ---------------------------------------------------------------------------

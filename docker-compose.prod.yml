@@ -31,7 +31,7 @@ services:
     networks:
       - frontend_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:80/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -42,10 +42,12 @@ services:
       dockerfile: Dockerfile.prod
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       SECRET_KEY: ${SECRET_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      CORS_ORIGINS: ${CORS_ORIGINS}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      BACKEND_URL: ${BACKEND_URL}
+      FRONTEND_URL: ${FRONTEND_URL}
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       APOLLO_WEBHOOK_SECRET: ${APOLLO_WEBHOOK_SECRET:-}
@@ -91,7 +93,7 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       SECRET_KEY: ${SECRET_KEY}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -119,6 +121,12 @@ services:
           memory: 512M
     networks:
       - backend_net
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python -m app.worker' && redis-cli -u redis://:${REDIS_PASSWORD}@redis:6379/0 --no-auth-warning ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
 
   frontend:
     build:
@@ -143,7 +151,7 @@ services:
     networks:
       - frontend_net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:80/ || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 5s
@@ -177,9 +185,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
     volumes:
-      - redisdata:/var/lib/redis/data
+      - redisdata:/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -192,7 +200,7 @@ services:
     networks:
       - backend_net
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} --no-auth-warning ping || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
