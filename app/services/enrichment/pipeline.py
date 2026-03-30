@@ -322,7 +322,16 @@ class EnrichmentPipeline:
                 )
             raise
         finally:
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as commit_exc:
+                logger.critical(
+                    "Enrichment pipeline: DB commit failed in finally block — "
+                    "lead %d may be stuck in 'enriching' status: %s",
+                    lead_id,
+                    commit_exc,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
 
         # Auto-fill custom fields from enrichment results before scoring
         if lead.enrichment_data:

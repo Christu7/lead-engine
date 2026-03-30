@@ -296,8 +296,13 @@ async def run_analysis_for_lead(lead_id: int, client_id: int) -> None:
             lead.ai_status = "failed"
             try:
                 await db.commit()
-            except Exception:
-                pass
+            except Exception as commit_exc:
+                logger.critical(
+                    "AI analysis: DB commit failed — lead %d may be stuck in 'analyzing' status: %s",
+                    lead_id,
+                    commit_exc,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
             try:
                 dl_svc = DeadLetterService(redis)
                 await dl_svc.push(

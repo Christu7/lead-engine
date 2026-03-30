@@ -199,6 +199,36 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
 
+    # Reset leads stuck in "enriching" for more than 30 minutes back to "pending"
+    # so they can be re-enqueued on the next enrichment trigger or manual retry.
+    # This handles the case where the pipeline's finally-block DB commit failed.
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import update
+
+        from app.core.database import async_session
+        from app.models.lead import Lead
+
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        async with async_session() as db:
+            result = await db.execute(
+                update(Lead)
+                .where(Lead.enrichment_status == "enriching", Lead.updated_at <= cutoff)
+                .values(enrichment_status="pending")
+                .returning(Lead.id)
+            )
+            stuck_ids = list(result.scalars())
+            await db.commit()
+        if stuck_ids:
+            logger.warning(
+                "Startup recovery: reset %d lead(s) stuck in 'enriching' back to 'pending': %s",
+                len(stuck_ids),
+                stuck_ids,
+            )
+    except Exception as exc:
+        logger.error("Startup recovery: failed to reset stuck leads: %s", exc)
+
     # Recover tasks stranded in processing set from a previous crash
     stranded = await task_queue.recover_stranded()
     if stranded:

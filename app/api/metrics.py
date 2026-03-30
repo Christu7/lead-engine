@@ -5,20 +5,35 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import require_admin
+from app.core.deps import get_token_data, require_admin
 from app.core.redis import redis
+from app.core.security import TokenData
 from app.core.state import APP_START_TIME
 from app.models.lead import EnrichmentLog, Lead, RoutingLog
-from app.services.enrichment.queue import QUEUE_KEY
+from app.models.user import User, UserClient
+from app.services.task_queue import TASK_QUEUE_KEY
 
-router = APIRouter(prefix="/metrics", tags=["metrics"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 
 @router.get("")
 async def get_metrics(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
     client_id: int | None = Query(None, description="Filter metrics to a specific client"),
 ):
+    # MT-2: non-superadmin admins may only query clients they belong to.
+    if client_id is not None and current_user.role != "superadmin":
+        access_check = await db.execute(
+            select(UserClient).where(
+                UserClient.user_id == current_user.id,
+                UserClient.client_id == client_id,
+            )
+        )
+        if access_check.scalar_one_or_none() is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="You do not have access to that client")
+
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     last_24h = now - timedelta(hours=24)
@@ -45,7 +60,7 @@ async def get_metrics(
     ).scalar() or 0
 
     # Redis queue depth (global — not filterable by client)
-    enrichment_queue_size = await redis.llen(QUEUE_KEY)
+    enrichment_queue_size = await redis.zcard(TASK_QUEUE_KEY)
 
     # Routing stats over the last 24 h
     routing_row = (

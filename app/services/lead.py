@@ -296,6 +296,7 @@ async def bulk_upsert_leads(
     updated = 0
     skipped = 0
     new_lead_ids: list[int] = []
+    updated_lead_ids: list[int] = []
 
     apollo_ids = [ld.apollo_id for ld in leads_data if ld.apollo_id]
     emails = [ld.email.lower() for ld in leads_data]
@@ -349,6 +350,7 @@ async def bulk_upsert_leads(
                     existing_lead.enrichment_data = merged
                 elif value is not None:
                     setattr(existing_lead, key, value)
+            updated_lead_ids.append(existing_lead.id)
             updated += 1
         else:
             skipped += 1
@@ -356,6 +358,9 @@ async def bulk_upsert_leads(
     await db.commit()
 
     for lead_id in new_lead_ids:
+        await _safe_enqueue(lead_id, client_id)
+
+    for lead_id in updated_lead_ids:
         await _safe_enqueue(lead_id, client_id)
 
     return {"created": created, "updated": updated, "skipped": skipped}

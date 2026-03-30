@@ -122,7 +122,7 @@ services:
     networks:
       - backend_net
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'python -m app.worker' && redis-cli -u redis://:${REDIS_PASSWORD}@redis:6379/0 --no-auth-warning ping || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'python -m app.worker' || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 15s

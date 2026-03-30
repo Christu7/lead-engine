@@ -96,6 +96,8 @@ async def update_user_role(
     target.role = body.role
     await db.commit()
     await db.refresh(target)
+    # Invalidate any existing JWTs so a demoted user's old token is rejected immediately.
+    await invalidate_user_tokens(db, user_id)
     return target
 
 

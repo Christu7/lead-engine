@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = ""  # Production: comma-separated list of allowed CORS origins
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     BACKEND_URL: str = "http://localhost:8000"
