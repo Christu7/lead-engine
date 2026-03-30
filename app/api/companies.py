@@ -168,6 +168,13 @@ async def _attach_lead_counts(
 # ---------------------------------------------------------------------------
 
 
+_VALID_SORT_FIELDS = {
+    "name", "domain", "industry", "employee_count",
+    "enrichment_status", "abm_status", "lead_count",
+    "created_at", "enriched_at",
+}
+
+
 @router.get("/", summary="List companies")
 async def list_companies_endpoint(
     client_id: int = Depends(get_client_id),
@@ -177,13 +184,28 @@ async def list_companies_endpoint(
     enrichment_status: str | None = None,
     abm_status: str | None = None,
     industry: str | None = None,
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
 ) -> dict:
+    if sort_by not in _VALID_SORT_FIELDS:
+        raise HTTPException(status_code=400, detail=f"Invalid sort_by '{sort_by}'")
+    if sort_order not in ("asc", "desc"):
+        raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+
     filters = {
         "enrichment_status": enrichment_status,
         "abm_status": abm_status,
         "industry": industry,
     }
-    companies, total = await list_companies(db, client_id=client_id, skip=skip, limit=limit, filters=filters)
+    companies, total = await list_companies(
+        db,
+        client_id=client_id,
+        skip=skip,
+        limit=limit,
+        filters=filters,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
     items = await _attach_lead_counts(db, companies, client_id)
     return {"items": items, "total": total, "skip": skip, "limit": limit}
 

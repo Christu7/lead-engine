@@ -7,6 +7,8 @@ export interface CompanyFilters {
   enrichment_status?: string;
   abm_status?: string;
   industry?: string;
+  sort_by?: string;
+  sort_order?: "asc" | "desc";
 }
 
 export async function getCompanies(

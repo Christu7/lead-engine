@@ -10,10 +10,12 @@ import ExportModal from "../components/leads/ExportModal";
 import type { LeadFiltersExport } from "../types/lead";
 import { getCustomFieldDefinitions } from "../api/custom_fields";
 import type { CustomFieldDefinition } from "../types/custom_field";
+import { useAuth } from "../contexts/AuthContext";
 
 export default function Leads() {
   const [searchParams] = useSearchParams();
   const { items, total, loading, limit, offset, sortBy, sortOrder, setFilter, setSort } = useLeads();
+  const { user } = useAuth();
 
   const [showFilters, setShowFilters] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
@@ -24,6 +26,8 @@ export default function Leads() {
   useEffect(() => {
     getCustomFieldDefinitions("lead").then(setCustomFieldDefs).catch(() => {});
   }, []); // empty deps — fetch once
+
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
 
   const search = searchParams.get("search") || "";
 
@@ -97,6 +101,8 @@ export default function Leads() {
         onLeadClick={setSelectedLeadId}
         loading={loading}
         customFieldDefs={customFieldDefs}
+        isAdmin={isAdmin}
+        onCustomFieldAdded={(def) => setCustomFieldDefs((prev) => [...prev, def])}
       />
 
       <LeadSlideOver leadId={selectedLeadId} onClose={() => setSelectedLeadId(null)} />

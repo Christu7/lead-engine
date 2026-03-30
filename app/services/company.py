@@ -82,12 +82,20 @@ async def get_company_by_name(
 # ---------------------------------------------------------------------------
 
 
+_ALLOWED_SORT_FIELDS = {
+    "name", "domain", "industry", "employee_count",
+    "enrichment_status", "abm_status", "created_at", "enriched_at",
+}
+
+
 async def list_companies(
     db: AsyncSession,
     client_id: int,
     skip: int = 0,
     limit: int = 20,
     filters: dict | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
 ) -> tuple[list[Company], int]:
     query = select(Company).where(Company.client_id == client_id)
 
@@ -102,7 +110,25 @@ async def list_companies(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar_one()
 
-    query = query.order_by(Company.created_at.desc()).limit(limit).offset(skip)
+    # Build ORDER BY — lead_count requires a correlated subquery; all others map to a column.
+    if sort_by == "lead_count":
+        order_expr = (
+            select(func.count(Lead.id))
+            .where(Lead.company_id == Company.id, Lead.client_id == client_id)
+            .correlate(Company)
+            .scalar_subquery()
+        )
+    elif sort_by in _ALLOWED_SORT_FIELDS:
+        order_expr = getattr(Company, sort_by)
+    else:
+        order_expr = Company.created_at
+
+    query = (
+        query
+        .order_by(order_expr.asc() if sort_order == "asc" else order_expr.desc())
+        .limit(limit)
+        .offset(skip)
+    )
     result = await db.execute(query)
     return list(result.scalars().all()), total
 

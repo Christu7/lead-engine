@@ -65,11 +65,14 @@ export async function switchClient(clientId: number): Promise<string> {
   return data.access_token;
 }
 
-export async function createClient(name: string): Promise<{ id: number; name: string }> {
+export async function createClient(
+  name: string,
+  description?: string,
+): Promise<{ id: number; name: string }> {
   const response = await apiFetch("/clients/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, description: description || null }),
   });
   if (!response.ok) throw new Error("Failed to create client");
   return response.json();

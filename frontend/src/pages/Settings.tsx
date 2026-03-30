@@ -11,6 +11,13 @@ import {
   getAiProvider,
   setAiProvider,
 } from "../api/settings";
+import {
+  listAdminUsers,
+  createAdminUser,
+  updateAdminUser,
+  removeUserFromWorkspace,
+  type AdminUser,
+} from "../api/admin";
 import type { ApiKeyEntry, RoutingSettings } from "../types/settings";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -513,6 +520,243 @@ export default function Settings() {
         </div>
         <CustomFieldsManager />
       </div>
+
+      {/* ── Team ── */}
+      <TeamSection currentClientId={user?.active_client_id ?? null} />
+    </div>
+  );
+}
+
+// ── Team section ──────────────────────────────────────────────────────────────
+
+function RoleBadge({ role }: { role: string }) {
+  const styles: Record<string, string> = {
+    superadmin: "bg-purple-100 text-purple-700",
+    admin: "bg-blue-100 text-blue-700",
+    member: "bg-gray-100 text-gray-600",
+  };
+  return (
+    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${styles[role] ?? styles.member}`}>
+      {role}
+    </span>
+  );
+}
+
+function InviteUserModal({
+  clientId,
+  onCreated,
+  onClose,
+}: {
+  clientId: number;
+  onCreated: () => void;
+  onClose: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<"admin" | "member">("member");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit() {
+    if (!email.trim() || !password.trim()) { setError("Email and password are required"); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      await createAdminUser(email.trim(), password, role, name.trim() || undefined, [clientId]);
+      onCreated();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b px-5 py-4">
+            <h3 className="text-base font-semibold text-gray-900">Invite User</h3>
+            <button onClick={onClose} className="text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Full Name</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Jane Smith"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Email <span className="text-red-500">*</span></label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane@example.com"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Password <span className="text-red-500">*</span></label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min 8 characters"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Role</label>
+              <select value={role} onChange={(e) => setRole(e.target.value as "admin" | "member")}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t px-5 py-4">
+            <button onClick={onClose} className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</button>
+            <button onClick={handleSubmit} disabled={saving} className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50">
+              {saving ? "Inviting…" : "Invite User"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TeamSection({ currentClientId }: { currentClientId: number | null }) {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showInvite, setShowInvite] = useState(false);
+  const [roleSaving, setRoleSaving] = useState<Record<number, boolean>>({});
+  const [removing, setRemoving] = useState<Record<number, boolean>>({});
+  const { user: currentUser } = useAuth();
+
+  const load = () => {
+    setLoading(true);
+    listAdminUsers()
+      .then(setUsers)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleRoleChange(u: AdminUser, newRole: string) {
+    setRoleSaving((p) => ({ ...p, [u.id]: true }));
+    try {
+      await updateAdminUser(u.id, { role: newRole });
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to update role");
+    } finally {
+      setRoleSaving((p) => ({ ...p, [u.id]: false }));
+    }
+  }
+
+  async function handleRemove(u: AdminUser) {
+    if (!currentClientId) return;
+    if (!confirm(`Remove ${u.name ?? u.email} from this workspace?`)) return;
+    setRemoving((p) => ({ ...p, [u.id]: true }));
+    try {
+      await removeUserFromWorkspace(u.id, currentClientId);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to remove user");
+    } finally {
+      setRemoving((p) => ({ ...p, [u.id]: false }));
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-6">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Team</h2>
+          <p className="mt-0.5 text-xs text-gray-500">Users in this workspace.</p>
+        </div>
+        {currentClientId && (
+          <button
+            onClick={() => setShowInvite(true)}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+          >
+            Invite User
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-100">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                <th className="px-4 py-2.5">Name</th>
+                <th className="px-4 py-2.5">Email</th>
+                <th className="px-4 py-2.5">Role</th>
+                <th className="px-4 py-2.5">Last Login</th>
+                <th className="px-4 py-2.5">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {users.map((u) => {
+                const isSelf = u.id === currentUser?.id;
+                const isSuperadmin = u.role === "superadmin";
+                return (
+                  <tr key={u.id} className="text-gray-700">
+                    <td className="px-4 py-2.5 font-medium">
+                      {u.name ?? <span className="text-gray-400 italic">—</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-gray-500">{u.email}</td>
+                    <td className="px-4 py-2.5">
+                      {isSuperadmin || isSelf ? (
+                        <RoleBadge role={u.role} />
+                      ) : (
+                        <select
+                          value={u.role}
+                          disabled={roleSaving[u.id]}
+                          onChange={(e) => handleRoleChange(u, e.target.value)}
+                          className="rounded border border-gray-200 px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+                        >
+                          <option value="member">Member</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-gray-400">
+                      {u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : "Never"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {!isSelf && !isSuperadmin && (
+                        <button
+                          onClick={() => handleRemove(u)}
+                          disabled={removing[u.id]}
+                          className="text-xs font-medium text-red-500 hover:text-red-700 disabled:opacity-50"
+                        >
+                          {removing[u.id] ? "Removing…" : "Remove"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {users.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-gray-400">No users in this workspace.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showInvite && currentClientId && (
+        <InviteUserModal
+          clientId={currentClientId}
+          onCreated={load}
+          onClose={() => setShowInvite(false)}
+        />
+      )}
     </div>
   );
 }

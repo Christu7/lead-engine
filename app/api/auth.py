@@ -1,4 +1,5 @@
 from authlib.integrations.starlette_client import OAuth
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -57,6 +58,9 @@ async def login(
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
     active_client_id = await get_default_client_id(db, user.id, user.role)
     token = _issue_token(user, active_client_id)
     return TokenResponse(access_token=token)
@@ -130,6 +134,9 @@ async def google_callback(request: Request, db: AsyncSession = Depends(get_db)):
     )
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
+    user.last_login_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(user)
     active_client_id = await get_default_client_id(db, user.id, user.role)
     jwt_token = _issue_token(user, active_client_id)
     # Use URL fragment (#token=) so the JWT never reaches the server in logs or referrer headers.

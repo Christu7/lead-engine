@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -10,6 +10,7 @@ import {
 import type { Lead } from "../../types/lead";
 import type { CustomFieldDefinition } from "../../types/custom_field";
 import ScoreBadge from "./ScoreBadge";
+import AddCustomFieldModal from "../AddCustomFieldModal";
 
 function renderCustomFieldCell(fieldType: string, value: unknown): React.ReactNode {
   if (value == null) return <span className="text-gray-400">—</span>;
@@ -58,6 +59,8 @@ interface LeadsTableProps {
   onLeadClick: (leadId: number) => void;
   loading: boolean;
   customFieldDefs?: CustomFieldDefinition[];
+  isAdmin?: boolean;
+  onCustomFieldAdded?: (def: CustomFieldDefinition) => void;
 }
 
 export default function LeadsTable({
@@ -75,7 +78,10 @@ export default function LeadsTable({
   onLeadClick,
   loading,
   customFieldDefs,
+  isAdmin = false,
+  onCustomFieldAdded,
 }: LeadsTableProps) {
+  const [showAddFieldModal, setShowAddFieldModal] = useState(false);
   const columns = useMemo(() => [
     col.display({
       id: "select",
@@ -161,7 +167,7 @@ export default function LeadsTable({
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id}>
+              <tr key={hg.id} className="group">
                 {hg.headers.map((header) => {
                   const canSort = header.column.getCanSort() && header.id !== "select";
                   return (
@@ -176,6 +182,17 @@ export default function LeadsTable({
                     </th>
                   );
                 })}
+                {isAdmin && (
+                  <th className="py-3 pr-3 text-left">
+                    <button
+                      onClick={() => setShowAddFieldModal(true)}
+                      title="Add custom column"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity rounded px-1.5 py-0.5 text-xs font-medium text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                    >
+                      +
+                    </button>
+                  </th>
+                )}
               </tr>
             ))}
           </thead>
@@ -242,6 +259,17 @@ export default function LeadsTable({
           </button>
         </div>
       </div>
+
+      {showAddFieldModal && (
+        <AddCustomFieldModal
+          entityType="lead"
+          onCreated={(def) => {
+            setShowAddFieldModal(false);
+            onCustomFieldAdded?.(def);
+          }}
+          onClose={() => setShowAddFieldModal(false)}
+        />
+      )}
     </div>
   );
 }

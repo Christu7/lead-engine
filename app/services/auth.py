@@ -63,18 +63,24 @@ async def find_or_create_google_user(db: AsyncSession, email: str, google_id: st
 
 
 async def get_user_clients(db: AsyncSession, user_id: int, role: str) -> list[Client]:
-    """Return all clients this user can access.
+    """Return all active clients this user can access.
 
-    superadmin → every client in the system
-    admin / member → only clients explicitly assigned via user_clients
+    Inactive (soft-deleted) workspaces are excluded for all roles — they must
+    not appear in the workspace switcher even for superadmins.  The admin
+    management panel uses a separate query that includes inactive workspaces.
+
+    superadmin → every active client in the system
+    admin / member → only active clients explicitly assigned via user_clients
     """
     if role == "superadmin":
-        result = await db.execute(select(Client).order_by(Client.id))
+        result = await db.execute(
+            select(Client).where(Client.is_active == True).order_by(Client.id)  # noqa: E712
+        )
     else:
         result = await db.execute(
             select(Client)
             .join(UserClient, Client.id == UserClient.client_id)
-            .where(UserClient.user_id == user_id)
+            .where(UserClient.user_id == user_id, Client.is_active == True)  # noqa: E712
             .order_by(Client.id)
         )
     return list(result.scalars().all())

@@ -4,36 +4,132 @@ import { createClient } from "../api/client";
 import { getQueueStats, type QueueStats } from "../api/admin";
 import { useAuth } from "../contexts/AuthContext";
 
+// ── Role badge for workspace dropdown ─────────────────────────────────────────
+
+function RolePill({ role }: { role: string }) {
+  const styles: Record<string, string> = {
+    superadmin: "bg-purple-500/20 text-purple-300",
+    admin: "bg-blue-500/20 text-blue-300",
+    member: "bg-gray-500/20 text-gray-400",
+  };
+  return (
+    <span className={`ml-auto flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${styles[role] ?? styles.member}`}>
+      {role}
+    </span>
+  );
+}
+
+// ── Create workspace modal ─────────────────────────────────────────────────────
+
+function CreateWorkspaceModal({
+  onCreated,
+  onClose,
+}: {
+  onCreated: (workspace: { id: number; name: string }) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCreate() {
+    const trimmed = name.trim();
+    if (!trimmed || creating) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const created = await createClient(trimmed, description.trim() || undefined);
+      onCreated(created);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create workspace");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b px-5 py-4">
+            <h3 className="text-base font-semibold text-gray-900">New Workspace</h3>
+            <button onClick={onClose} className="text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
+          </div>
+          <div className="space-y-4 px-5 py-4">
+            {error && (
+              <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+            )}
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") onClose(); }}
+                placeholder="Acme Corp"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700">Description</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Optional description…"
+                rows={2}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 border-t px-5 py-4">
+            <button
+              onClick={onClose}
+              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleCreate}
+              disabled={creating || !name.trim()}
+              className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {creating ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Client selector ────────────────────────────────────────────────────────────
+
 function ClientSelector() {
   const { user, switchClient, clientVersion } = useAuth();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setOpen(false);
-        setAdding(false);
-        setNewName("");
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  useEffect(() => {
-    if (adding) inputRef.current?.focus();
-  }, [adding]);
-
   if (!user) return null;
 
-  // Only superadmins can create clients
   const isSuperAdmin = user.role === "superadmin";
   const activeClient = user.clients.find((c) => c.id === user.active_client_id);
 
@@ -43,6 +139,7 @@ function ClientSelector() {
     setSwitching(true);
     try {
       await switchClient(clientId);
+      localStorage.setItem("lastWorkspaceId", String(clientId));
       setToast(`Switched to ${clientName}`);
       setTimeout(() => setToast(null), 3000);
     } finally {
@@ -50,23 +147,19 @@ function ClientSelector() {
     }
   }
 
-  async function handleCreate() {
-    const name = newName.trim();
-    if (!name || creating) return;
-    setCreating(true);
+  async function handleCreated(created: { id: number; name: string }) {
+    setShowCreateModal(false);
+    setSwitching(true);
     try {
-      const created = await createClient(name);
-      setAdding(false);
-      setNewName("");
-      setOpen(false);
       await switchClient(created.id);
+      localStorage.setItem("lastWorkspaceId", String(created.id));
       setToast(`Created and switched to ${created.name}`);
       setTimeout(() => setToast(null), 3000);
     } catch {
-      setToast("Failed to create workspace");
+      setToast(`Created ${created.name}`);
       setTimeout(() => setToast(null), 3000);
     } finally {
-      setCreating(false);
+      setSwitching(false);
     }
   }
 
@@ -112,15 +205,16 @@ function ClientSelector() {
                   role="option"
                   aria-selected={isActive}
                   onClick={() => handleSwitch(c.id, c.name)}
-                  className={`w-full flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors ${
                     isActive
                       ? "text-white bg-gray-700 cursor-default"
                       : "text-gray-300 hover:bg-gray-700 hover:text-white"
                   }`}
                 >
-                  <span className="truncate">{c.name}</span>
+                  <span className="truncate flex-1 text-left">{c.name}</span>
+                  <RolePill role={user.role} />
                   {isActive && (
-                    <svg className="ml-2 h-3.5 w-3.5 text-indigo-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                    <svg className="h-3.5 w-3.5 text-indigo-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                     </svg>
                   )}
@@ -132,43 +226,27 @@ function ClientSelector() {
             {isSuperAdmin && (
               <>
                 <div className="border-t border-gray-700 my-1" />
-                {adding ? (
-                  <div className="px-2 py-1.5 flex items-center gap-1.5">
-                    <input
-                      ref={inputRef}
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleCreate();
-                        if (e.key === "Escape") { setAdding(false); setNewName(""); }
-                      }}
-                      placeholder="Workspace name"
-                      className="flex-1 min-w-0 rounded bg-gray-700 px-2 py-1 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                    <button
-                      onClick={handleCreate}
-                      disabled={!newName.trim() || creating}
-                      className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
-                    >
-                      {creating ? "…" : "Add"}
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setAdding(true)}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
-                  >
-                    <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                    </svg>
-                    <span>New workspace</span>
-                  </button>
-                )}
+                <button
+                  onClick={() => { setOpen(false); setShowCreateModal(true); }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
+                >
+                  <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  <span>New workspace</span>
+                </button>
               </>
             )}
           </div>
         )}
       </div>
+
+      {showCreateModal && (
+        <CreateWorkspaceModal
+          onCreated={handleCreated}
+          onClose={() => setShowCreateModal(false)}
+        />
+      )}
 
       {toast && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[9999] rounded-md bg-gray-900 border border-gray-700 px-4 py-2 text-sm text-white shadow-lg pointer-events-none">
@@ -178,6 +256,8 @@ function ClientSelector() {
     </>
   );
 }
+
+// ── Queue indicator ────────────────────────────────────────────────────────────
 
 function QueueIndicator() {
   const [stats, setStats] = useState<QueueStats | null>(null);
@@ -283,21 +363,21 @@ function QueueIndicator() {
   );
 }
 
+// ── Layout ─────────────────────────────────────────────────────────────────────
+
 export default function Layout() {
   const { user, logout, clientVersion } = useAuth();
 
   const isSuperAdmin = user?.role === "superadmin";
   const canAccessSettings = user?.role === "admin" || user?.role === "superadmin";
 
-  // Show workspace selector for superadmins (always) or anyone with >1 client
-  const showSelector = user && (isSuperAdmin || user.clients.length > 1);
-
   return (
     <div className="flex h-screen bg-gray-100">
       <aside className="flex w-64 flex-col bg-gray-900 text-white">
         <div className="px-6 py-5 text-xl font-bold">LeadEngine</div>
 
-        {showSelector && (
+        {/* Workspace selector — shown to all authenticated users */}
+        {user && user.clients.length > 0 && (
           <div className="pb-2 border-b border-gray-800 mb-2">
             <ClientSelector />
           </div>
@@ -316,7 +396,6 @@ export default function Layout() {
             `block rounded-md px-3 py-2 text-sm font-medium ${isActive ? "bg-gray-800 text-white" : "text-gray-300 hover:bg-gray-800 hover:text-white"}`
           }>Companies</NavLink>
 
-          {/* Settings + Scoring Rules: admin and superadmin only */}
           {canAccessSettings && (
             <>
               <NavLink to="/scoring-rules" className={({ isActive }) =>
@@ -329,7 +408,6 @@ export default function Layout() {
             </>
           )}
 
-          {/* Super Admin panel: superadmin only */}
           {isSuperAdmin && (
             <>
               <div className="my-2 border-t border-gray-800" />

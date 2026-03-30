@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import { login as apiLogin, logout as apiLogout, fetchMe, switchClient as apiSwitchClient, type AuthUser } from "../api/client";
 
+
 interface AuthContextValue {
   token: string | null;
   user: AuthUser | null;
@@ -22,6 +23,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadUser = useCallback(async () => {
     try {
       const me = await fetchMe();
+      // If active workspace was soft-deleted, auto-switch to the first available one.
+      if (
+        me.active_client_id !== null &&
+        me.clients.length > 0 &&
+        !me.clients.some((c) => c.id === me.active_client_id)
+      ) {
+        const newToken = await apiSwitchClient(me.clients[0].id);
+        localStorage.setItem("token", newToken);
+        setToken(newToken);
+        // The token useEffect will call loadUser again with the refreshed token.
+        return;
+      }
+      // Restore last used workspace from localStorage (set on explicit switch).
+      const lastIdStr = localStorage.getItem("lastWorkspaceId");
+      const lastId = lastIdStr ? parseInt(lastIdStr, 10) : NaN;
+      if (
+        !isNaN(lastId) &&
+        lastId !== me.active_client_id &&
+        me.clients.some((c) => c.id === lastId)
+      ) {
+        const newToken = await apiSwitchClient(lastId);
+        localStorage.setItem("token", newToken);
+        setToken(newToken);
+        return;
+      }
       setUser(me);
     } catch {
       setUser(null);

@@ -5,11 +5,13 @@ from pydantic import BaseModel
 
 class ClientCreate(BaseModel):
     name: str
+    description: str | None = None
     settings: dict = {}
 
 
 class ClientUpdate(BaseModel):
     name: str | None = None
+    description: str | None = None
     settings: dict | None = None
 
 
@@ -18,6 +20,8 @@ class ClientResponse(BaseModel):
 
     id: int
     name: str
+    description: str | None
+    is_active: bool
     settings: dict
     created_at: datetime
     updated_at: datetime

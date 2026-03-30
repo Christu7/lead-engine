@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   createColumnHelper,
   flexRender,
@@ -13,6 +14,8 @@ import AddCompanyModal from "../components/companies/AddCompanyModal";
 import CsvUploadModal from "../components/companies/CsvUploadModal";
 import { getCustomFieldDefinitions } from "../api/custom_fields";
 import type { CustomFieldDefinition } from "../types/custom_field";
+import AddCustomFieldModal from "../components/AddCustomFieldModal";
+import { useAuth } from "../contexts/AuthContext";
 
 function renderCustomFieldCell(fieldType: string, value: unknown): React.ReactNode {
   if (value == null) return <span className="text-gray-400">—</span>;
@@ -40,6 +43,13 @@ function renderCustomFieldCell(fieldType: string, value: unknown): React.ReactNo
 }
 
 const col = createColumnHelper<Company>();
+
+// ── Sort icon (same pattern as LeadsTable) ───────────────────────────────────
+
+function SortIcon({ active, direction }: { active: boolean; direction: string }) {
+  if (!active) return <span className="ml-1 text-gray-300">&uarr;&darr;</span>;
+  return <span className="ml-1">{direction === "asc" ? "\u2191" : "\u2193"}</span>;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -92,7 +102,13 @@ function AbmBadge({ status }: { status: string }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
+const SORT_DEFAULTS = { sort_by: "created_at", sort_order: "desc" } as const;
+
 export default function Companies() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin";
+
   // Server-side data
   const [companies, setCompanies] = useState<Company[]>([]);
   const [total, setTotal] = useState(0);
@@ -106,6 +122,29 @@ export default function Companies() {
   const [enrichmentFilter, setEnrichmentFilter] = useState("");
   const [abmFilter, setAbmFilter] = useState("");
 
+  // Sort state (URL-backed)
+  const sortBy = searchParams.get("sort_by") || SORT_DEFAULTS.sort_by;
+  const sortOrder = (searchParams.get("sort_order") || SORT_DEFAULTS.sort_order) as "asc" | "desc";
+
+  const handleSort = useCallback(
+    (columnId: string) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        const currentSort = prev.get("sort_by") || SORT_DEFAULTS.sort_by;
+        const currentOrder = prev.get("sort_order") || SORT_DEFAULTS.sort_order;
+        if (currentSort === columnId) {
+          next.set("sort_order", currentOrder === "asc" ? "desc" : "asc");
+        } else {
+          next.set("sort_by", columnId);
+          next.set("sort_order", "asc");
+        }
+        return next;
+      });
+      setSkip(0);
+    },
+    [setSearchParams],
+  );
+
   // Client-side filter
   const [search, setSearch] = useState("");
 
@@ -114,6 +153,7 @@ export default function Companies() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showCsvModal, setShowCsvModal] = useState(false);
+  const [showAddFieldModal, setShowAddFieldModal] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [bulkEnriching, setBulkEnriching] = useState(false);
   const [enrichingSelected, setEnrichingSelected] = useState(false);
@@ -155,6 +195,8 @@ export default function Companies() {
         limit,
         enrichment_status: enrichmentFilter || undefined,
         abm_status: abmFilter || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
       });
       setCompanies(res.items);
       setTotal(res.total);
@@ -163,7 +205,7 @@ export default function Companies() {
     } finally {
       setLoading(false);
     }
-  }, [skip, limit, enrichmentFilter, abmFilter]);
+  }, [skip, limit, enrichmentFilter, abmFilter, sortBy, sortOrder]);
 
   useEffect(() => {
     fetchCompanies();
@@ -225,6 +267,7 @@ export default function Companies() {
     }),
     col.accessor("name", {
       header: "Name",
+      enableSorting: true,
       cell: (info) => (
         <button
           onClick={() => setSelectedCompanyId(info.row.original.id)}
@@ -236,14 +279,17 @@ export default function Companies() {
     }),
     col.accessor("domain", {
       header: "Domain",
+      enableSorting: true,
       cell: (info) => info.getValue() || "—",
     }),
     col.accessor("industry", {
       header: "Industry",
+      enableSorting: true,
       cell: (info) => info.getValue() || "—",
     }),
     col.accessor("employee_count", {
       header: "Employees",
+      enableSorting: true,
       cell: (info) => {
         const v = info.getValue();
         return v != null ? v.toLocaleString() : "—";
@@ -251,18 +297,22 @@ export default function Companies() {
     }),
     col.accessor("enrichment_status", {
       header: "Enrichment",
+      enableSorting: true,
       cell: (info) => <EnrichmentBadge status={info.getValue()} />,
     }),
     col.accessor("abm_status", {
       header: "ABM",
+      enableSorting: true,
       cell: (info) => <AbmBadge status={info.getValue()} />,
     }),
     col.accessor("lead_count", {
       header: "Leads",
+      enableSorting: true,
       cell: (info) => info.getValue(),
     }),
     col.accessor("created_at", {
       header: "Created",
+      enableSorting: true,
       cell: (info) => relativeDate(info.getValue()),
     }),
     ...(customFieldDefs).filter(fd => fd.show_in_table).map(fd =>
@@ -275,7 +325,7 @@ export default function Companies() {
         },
       })
     ),
-  ], [customFieldDefs]);
+  ], [customFieldDefs, sortBy, sortOrder]);
 
   const table = useReactTable({
     data: filtered,
@@ -552,16 +602,37 @@ export default function Companies() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id}>
-                  {hg.headers.map((header) => (
-                    <th
-                      key={header.id}
-                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500"
-                      style={header.column.getSize() ? { width: header.column.getSize() } : undefined}
-                    >
-                      {flexRender(header.column.columnDef.header, header.getContext())}
+                <tr key={hg.id} className="group">
+                  {hg.headers.map((header) => {
+                    const sortable = header.column.columnDef.enableSorting === true;
+                    const isActive = sortable && sortBy === header.column.id;
+                    return (
+                      <th
+                        key={header.id}
+                        onClick={sortable ? () => handleSort(header.column.id) : undefined}
+                        className={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 select-none${sortable ? " cursor-pointer hover:text-gray-700" : ""}`}
+                        style={header.column.getSize() ? { width: header.column.getSize() } : undefined}
+                      >
+                        <span className="inline-flex items-center gap-0.5">
+                          {flexRender(header.column.columnDef.header, header.getContext())}
+                          {sortable && (
+                            <SortIcon active={isActive} direction={sortOrder} />
+                          )}
+                        </span>
+                      </th>
+                    );
+                  })}
+                  {isAdmin && (
+                    <th className="py-3 pr-3 text-left">
+                      <button
+                        onClick={() => setShowAddFieldModal(true)}
+                        title="Add custom column"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity rounded px-1.5 py-0.5 text-xs font-medium text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                      >
+                        +
+                      </button>
                     </th>
-                  ))}
+                  )}
                 </tr>
               ))}
             </thead>
@@ -645,6 +716,16 @@ export default function Companies() {
         <CsvUploadModal
           onClose={() => setShowCsvModal(false)}
           onUploaded={fetchCompanies}
+        />
+      )}
+      {showAddFieldModal && (
+        <AddCustomFieldModal
+          entityType="company"
+          onCreated={(def) => {
+            setShowAddFieldModal(false);
+            setCustomFieldDefs((prev) => [...prev, def]);
+          }}
+          onClose={() => setShowAddFieldModal(false)}
         />
       )}
 
