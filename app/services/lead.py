@@ -363,4 +363,25 @@ async def bulk_upsert_leads(
     for lead_id in updated_lead_ids:
         await _safe_enqueue(lead_id, client_id)
 
+    # Auto-link companies for all created/updated leads.
+    # _try_auto_link_company already swallows failures internally, but we also
+    # wrap the fetch so a DB error here never aborts the bulk import result.
+    all_processed_ids = new_lead_ids + updated_lead_ids
+    if all_processed_ids:
+        try:
+            leads_result = await db.execute(
+                select(Lead).where(
+                    Lead.id.in_(all_processed_ids),
+                    Lead.client_id == client_id,
+                )
+            )
+            for lead in leads_result.scalars():
+                await _try_auto_link_company(db, lead, client_id)
+        except Exception as exc:
+            logger.warning(
+                "bulk_upsert_leads: auto-link company step failed (non-fatal): %s",
+                exc,
+                extra={"client_id": client_id},
+            )
+
     return {"created": created, "updated": updated, "skipped": skipped}

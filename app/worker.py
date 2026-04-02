@@ -180,12 +180,23 @@ async def process_company_task(raw: str, payload: dict) -> None:
             )
             await task_queue.nack_transient(raw, delay, retry_count + 1)
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "company_enrichment: unexpected error for %s",
             company_id_str,
             extra={"company_id": company_id_str, "client_id": client_id},
         )
+        try:
+            from app.services.dead_letter import DeadLetterService, DeadLetterType
+            dl_svc = DeadLetterService(redis)
+            await dl_svc.push(
+                DeadLetterType.ENRICHMENT,
+                lead_id=0,
+                client_id=client_id,
+                error=f"Company {company_id_str} unexpected error: {exc}",
+            )
+        except Exception as dl_exc:
+            logger.error("company_enrichment: failed to write dead letter: %s", dl_exc)
         await task_queue.ack(raw)
 
 

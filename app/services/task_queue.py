@@ -112,14 +112,52 @@ async def recover_stranded() -> int:
             return 0
 
         now = time.time()
-        async with redis.pipeline() as pipe:
-            for item in stranded:
-                pipe.zrem(TASK_PROCESSING_KEY, item)
-                pipe.zadd(TASK_QUEUE_KEY, {item: now})
-            await pipe.execute()
+        recovered = 0
+        dead_lettered = 0
 
-        logger.info("recover_stranded: re-enqueued %d stranded tasks", len(stranded))
-        return len(stranded)
+        for item in stranded:
+            retry_count = 0
+            client_id = 0
+            payload_for_dl: dict = {}
+            try:
+                data = json.loads(item)
+                payload_for_dl = data.get("payload", {})
+                retry_count = payload_for_dl.get("retry_count", 0)
+                client_id = payload_for_dl.get("client_id", 0)
+            except Exception:
+                pass
+
+            await redis.zrem(TASK_PROCESSING_KEY, item)
+
+            if retry_count >= MAX_TASK_RETRIES:
+                # Task has already exhausted its retry budget — dead letter it.
+                dead_lettered += 1
+                logger.warning(
+                    "recover_stranded: task exhausted retries (count=%d) — dead lettering: %s",
+                    retry_count,
+                    item[:120],
+                )
+                try:
+                    from app.services.dead_letter import DeadLetterService, DeadLetterType
+                    dl_svc = DeadLetterService(redis)
+                    await dl_svc.push(
+                        DeadLetterType.ENRICHMENT,
+                        lead_id=payload_for_dl.get("lead_id", 0),
+                        client_id=client_id,
+                        error=f"Stranded task exceeded max retries ({MAX_TASK_RETRIES}): {item[:200]}",
+                    )
+                except Exception as dl_exc:
+                    logger.error("recover_stranded: failed to write dead letter: %s", dl_exc)
+            else:
+                await redis.zadd(TASK_QUEUE_KEY, {item: now})
+                recovered += 1
+
+        logger.info(
+            "recover_stranded: re-enqueued %d, dead-lettered %d stranded tasks",
+            recovered,
+            dead_lettered,
+        )
+        return recovered + dead_lettered
     finally:
         await redis.delete(_RECOVER_LOCK_KEY)
 

@@ -20,19 +20,28 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 async def get_metrics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
+    token_data: TokenData = Depends(get_token_data),
     client_id: int | None = Query(None, description="Filter metrics to a specific client"),
 ):
-    # MT-2: non-superadmin admins may only query clients they belong to.
-    if client_id is not None and current_user.role != "superadmin":
-        access_check = await db.execute(
-            select(UserClient).where(
-                UserClient.user_id == current_user.id,
-                UserClient.client_id == client_id,
+    from fastapi import HTTPException
+
+    # Non-superadmin admins are always scoped to their own workspace.
+    # If no client_id was specified, default to their active workspace.
+    # If one was specified, verify they actually belong to it.
+    if current_user.role != "superadmin":
+        if client_id is None:
+            # Force scope to the requesting user's active client from the JWT.
+            client_id = token_data.active_client_id
+        else:
+            # MT-2: verify the admin belongs to the requested client.
+            access_check = await db.execute(
+                select(UserClient).where(
+                    UserClient.user_id == current_user.id,
+                    UserClient.client_id == client_id,
+                )
             )
-        )
-        if access_check.scalar_one_or_none() is None:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=403, detail="You do not have access to that client")
+            if access_check.scalar_one_or_none() is None:
+                raise HTTPException(status_code=403, detail="You do not have access to that client")
 
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)

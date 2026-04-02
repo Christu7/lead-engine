@@ -83,6 +83,12 @@ async def require_admin(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or account is disabled",
         )
+    if token_data.token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been invalidated. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
@@ -101,6 +107,12 @@ async def require_superadmin(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or account is disabled",
+        )
+    if token_data.token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been invalidated. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     return user
 

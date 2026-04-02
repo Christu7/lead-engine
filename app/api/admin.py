@@ -17,7 +17,6 @@ from app.schemas.admin import (
     AdminCreateUser,
     AdminUpdateClient,
     AdminUpdateUser,
-    AdminUpdateUserRole,
     AdminUserClientInfo,
     AdminUserResponse,
     AssignClientRequest,
@@ -196,37 +195,6 @@ async def update_user(
     )
     return await _build_user_response(db, target)
 
-
-@router.patch("/users/{user_id}/role", response_model=AdminUserResponse)
-async def update_user_role(
-    user_id: int,
-    body: AdminUpdateUserRole,
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Change a user's role. Admins can set member/admin. Superadmin can set any role."""
-    allowed = {"member", "admin"} if current_user.role == "admin" else _VALID_ROLES
-    if body.role not in allowed:
-        raise HTTPException(status_code=400, detail=f"Role '{body.role}' not allowed for your permission level")
-
-    target = await db.get(User, user_id)
-    if target is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Prevent a regular admin from modifying a superadmin
-    if current_user.role == "admin" and target.role == "superadmin":
-        raise HTTPException(status_code=403, detail="Cannot modify a superadmin")
-
-    # Cannot change own role
-    if user_id == current_user.id and body.role != current_user.role:
-        raise HTTPException(status_code=400, detail="Cannot change your own role")
-
-    target.role = body.role
-    await db.commit()
-    await db.refresh(target)
-    # Invalidate any existing JWTs so a demoted user's old token is rejected immediately.
-    await invalidate_user_tokens(db, user_id)
-    return await _build_user_response(db, target)
 
 
 @router.post("/users/{user_id}/clients", status_code=201)

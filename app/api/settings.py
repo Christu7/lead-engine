@@ -14,7 +14,6 @@ from app.core.exceptions import ConfigurationError
 from app.models.client import Client
 from app.schemas.routing import (
     EnrichmentSettingsResponse,
-    EnrichmentSettingsUpdate,
     RoutingSettingsResponse,
     RoutingSettingsUpdate,
 )
@@ -30,6 +29,7 @@ ALLOWED_KEY_NAMES = frozenset([
     "anthropic", "openai", "apollo",
     "ghl_inbound", "ghl_outbound",
     "clearbit", "proxycurl",
+    "ai_provider_preference",
 ])
 # Keys that are URLs, not API keys — skip automatic verification after save
 _URL_KEYS = frozenset(["ghl_inbound", "ghl_outbound"])
@@ -100,6 +100,20 @@ async def update_routing_settings(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
+    # Validate webhook URLs against SSRF risks before storing.
+    for field_name, url_value in (
+        ("ghl_inbound_webhook_url", data.ghl_inbound_webhook_url),
+        ("ghl_outbound_webhook_url", data.ghl_outbound_webhook_url),
+    ):
+        if url_value:
+            try:
+                await asyncio.to_thread(validate_webhook_url, url_value)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid URL for '{field_name}': {exc}",
+                )
+
     settings = dict(client.settings or {})
     settings["routing"] = data.model_dump()
     client.settings = settings
@@ -144,26 +158,6 @@ async def get_enrichment_settings(
         proxycurl_api_key=_resolve("proxycurl_api_key"),
     )
 
-
-@router.put("/enrichment", response_model=EnrichmentSettingsResponse)
-async def update_enrichment_settings(
-    data: EnrichmentSettingsUpdate,
-    client_id: int = Depends(get_client_id),
-    db: AsyncSession = Depends(get_db),
-):
-    client = await db.get(Client, client_id)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    settings = dict(client.settings or {})
-    existing = settings.get("enrichment", {})
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
-    existing.update(updates)
-    settings["enrichment"] = existing
-    client.settings = settings
-    await db.commit()
-    await db.refresh(client)
-    return EnrichmentSettingsResponse(**client.settings["enrichment"])
 
 
 # ── API Key Store endpoints (admin-only) ──────────────────────────────────────
