@@ -131,6 +131,138 @@ class TestDashboardStatsEndpoint:
 
 
 @pytest.mark.integration
+class TestLeadsDelete:
+    """DELETE /api/leads/{lead_id} — hard delete, scoped to client_id."""
+
+    async def test_delete_own_lead_returns_204(self, authenticated_client, db_session, seeded_users):
+        """Deleting a lead owned by the user's client returns 204 and removes the row."""
+        from app.models.lead import Lead
+        from app.models.user import UserClient
+
+        uc = (await db_session.execute(
+            select(UserClient).where(UserClient.user_id == seeded_users["member"].id)
+        )).scalar_one()
+
+        lead = Lead(name="To Delete", email="del@test.com", client_id=uc.client_id)
+        db_session.add(lead)
+        await db_session.commit()
+        await db_session.refresh(lead)
+
+        resp = await authenticated_client.delete(f"/api/leads/{lead.id}")
+        assert resp.status_code == 204
+
+        # Row must be gone — hard delete
+        result = await db_session.execute(
+            select(Lead).where(Lead.id == lead.id)
+        )
+        assert result.scalar_one_or_none() is None
+
+    async def test_delete_cross_tenant_returns_404(self, authenticated_client, db_session):
+        """Cannot delete a lead belonging to a different client — returns 404."""
+        from app.models.client import Client
+        from app.models.lead import Lead
+
+        other_client = Client(name="Other Client", settings={})
+        db_session.add(other_client)
+        await db_session.commit()
+        await db_session.refresh(other_client)
+
+        lead = Lead(name="Other Lead", email="other@test.com", client_id=other_client.id)
+        db_session.add(lead)
+        await db_session.commit()
+        await db_session.refresh(lead)
+
+        resp = await authenticated_client.delete(f"/api/leads/{lead.id}")
+        assert resp.status_code == 404
+
+        # Row must still exist — we did not touch another client's data
+        result = await db_session.execute(
+            select(Lead).where(Lead.id == lead.id)
+        )
+        assert result.scalar_one_or_none() is not None
+
+    async def test_delete_nonexistent_returns_404(self, authenticated_client):
+        resp = await authenticated_client.delete("/api/leads/99999")
+        assert resp.status_code == 404
+
+    async def test_unauthenticated_returns_401(self, http_client):
+        resp = await http_client.delete("/api/leads/1")
+        assert resp.status_code == 401
+
+
+@pytest.mark.integration
+class TestCompaniesDelete:
+    """DELETE /api/companies/{company_id} — soft delete (abm_status='inactive'), scoped to client_id."""
+
+    async def test_soft_delete_own_company_returns_204(self, authenticated_client, db_session, seeded_users):
+        """Soft-deleting a company sets abm_status='inactive' and returns 204."""
+        import uuid
+        from app.models.company import Company
+        from app.models.user import UserClient
+
+        uc = (await db_session.execute(
+            select(UserClient).where(UserClient.user_id == seeded_users["member"].id)
+        )).scalar_one()
+
+        company = Company(
+            id=uuid.uuid4(),
+            name="Soft Delete Co",
+            client_id=uc.client_id,
+            enrichment_status="pending",
+            abm_status="target",
+        )
+        db_session.add(company)
+        await db_session.commit()
+        await db_session.refresh(company)
+
+        resp = await authenticated_client.delete(f"/api/companies/{company.id}")
+        assert resp.status_code == 204
+
+        # Row must still exist — soft delete preserves the record
+        await db_session.refresh(company)
+        assert company.abm_status == "inactive"
+
+    async def test_delete_cross_tenant_returns_404(self, authenticated_client, db_session):
+        """Cannot delete a company belonging to a different client — returns 404."""
+        import uuid
+        from app.models.client import Client
+        from app.models.company import Company
+
+        other_client = Client(name="Other Client C", settings={})
+        db_session.add(other_client)
+        await db_session.commit()
+        await db_session.refresh(other_client)
+
+        company = Company(
+            id=uuid.uuid4(),
+            name="Foreign Co",
+            client_id=other_client.id,
+            enrichment_status="pending",
+            abm_status="target",
+        )
+        db_session.add(company)
+        await db_session.commit()
+        await db_session.refresh(company)
+
+        resp = await authenticated_client.delete(f"/api/companies/{company.id}")
+        assert resp.status_code == 404
+
+        # abm_status must be unchanged — we did not touch another client's data
+        await db_session.refresh(company)
+        assert company.abm_status == "target"
+
+    async def test_delete_nonexistent_returns_404(self, authenticated_client):
+        import uuid
+        resp = await authenticated_client.delete(f"/api/companies/{uuid.uuid4()}")
+        assert resp.status_code == 404
+
+    async def test_unauthenticated_returns_401(self, http_client):
+        import uuid
+        resp = await http_client.delete(f"/api/companies/{uuid.uuid4()}")
+        assert resp.status_code == 401
+
+
+@pytest.mark.integration
 class TestClientOwnershipChecks:
     """MT-2: admins may only assign/unassign users to clients they belong to."""
 

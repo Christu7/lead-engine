@@ -220,6 +220,57 @@ class TestRoutingFailure:
 
 
 # ---------------------------------------------------------------------------
+# Tenant isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestTenantIsolation:
+
+    async def test_mismatched_client_id_rejected(self, db_session):
+        """Pipeline must reject a task whose client_id doesn't match the lead's owner.
+
+        The lead must not be mutated (enrichment_status stays 'pending',
+        enrichment_data stays None), the task must be aborted, and a dead
+        letter entry must be created with a SECURITY marker.
+        """
+        client_a = await _create_client_with_keys(db_session)
+        client_b = await _create_client_with_keys(db_session)
+
+        # Lead belongs to client_a
+        lead = await _create_lead(db_session, client_a, email="victim@example.com")
+        original_status = lead.enrichment_status  # "pending"
+        original_data = lead.enrichment_data       # None
+
+        mock_dl_push = AsyncMock()
+
+        with patch("app.services.dead_letter.DeadLetterService.push", mock_dl_push):
+            pipeline = EnrichmentPipeline(DEFAULT_PROVIDERS)
+            # Task payload claims client_b — should be rejected before any processing
+            await pipeline.run(db_session, lead.id, client_b.id)
+
+        await db_session.refresh(lead)
+
+        # No mutation must have occurred
+        assert lead.enrichment_status == original_status, (
+            f"enrichment_status changed from '{original_status}' to "
+            f"'{lead.enrichment_status}' despite mismatched client_id — "
+            "tenant isolation breach"
+        )
+        assert lead.enrichment_data == original_data, (
+            "enrichment_data was written despite mismatched client_id — "
+            "tenant isolation breach"
+        )
+
+        # Dead letter must have been created
+        mock_dl_push.assert_awaited_once()
+        error_kwarg = mock_dl_push.call_args.kwargs.get("error", "")
+        assert "SECURITY" in error_kwarg, (
+            f"Dead letter error message did not contain 'SECURITY': {error_kwarg!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # AI analysis status transitions
 # ---------------------------------------------------------------------------
 

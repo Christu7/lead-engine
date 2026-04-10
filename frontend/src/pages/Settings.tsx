@@ -18,6 +18,7 @@ import {
   removeUserFromWorkspace,
   type AdminUser,
 } from "../api/admin";
+import { changePassword } from "../api/client";
 import type { ApiKeyEntry, RoutingSettings } from "../types/settings";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -521,8 +522,102 @@ export default function Settings() {
         <CustomFieldsManager />
       </div>
 
+      {/* ── Change Password ── */}
+      <ChangePasswordSection />
+
       {/* ── Team ── */}
       <TeamSection currentClientId={user?.active_client_id ?? null} />
+    </div>
+  );
+}
+
+// ── Change Password section ───────────────────────────────────────────────────
+
+function ChangePasswordSection() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; type: "ok" | "err" } | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+
+    if (next !== confirm) {
+      setMsg({ text: "New passwords do not match", type: "err" });
+      return;
+    }
+    if (next.length < 8) {
+      setMsg({ text: "New password must be at least 8 characters", type: "err" });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await changePassword(current, next);
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setMsg({ text: "Password updated", type: "ok" });
+    } catch (err) {
+      setMsg({ text: err instanceof Error ? err.message : "Failed to change password", type: "err" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-6">
+      <h2 className="text-lg font-semibold text-gray-900 mb-1">Change Password</h2>
+      <p className="mt-0.5 mb-4 text-xs text-gray-500">
+        Update your account password. You will not be logged out of existing sessions.
+      </p>
+      <form onSubmit={handleSubmit} className="space-y-4 max-w-sm">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Current Password</label>
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            required
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">New Password</label>
+          <input
+            type="password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            required
+            placeholder="Min 8 characters"
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Confirm New Password</label>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            required
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          />
+        </div>
+        {msg && (
+          <p className={`text-sm font-medium ${msg.type === "ok" ? "text-green-600" : "text-red-600"}`}>
+            {msg.text}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={saving}
+          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Update Password"}
+        </button>
+      </form>
     </div>
   );
 }

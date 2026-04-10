@@ -297,6 +297,24 @@ def mock_enqueue_enrichment():
         yield
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def reset_redis_pool():
+    """Disconnect all shared redis pool connections after each test.
+
+    The module-level redis client (app.core.redis.redis) is a process-singleton
+    backed by a connection pool.  pytest-asyncio creates a fresh event loop per
+    test; connections established on loop N cannot be reused on loop N+1.
+    Calling disconnect() on the pool after every test forces new connections to
+    be created on the next test's loop, preventing 'Event loop is closed' errors.
+    """
+    yield
+    try:
+        from app.core.redis import redis
+        await redis.connection_pool.disconnect()
+    except Exception:
+        pass
+
+
 @pytest_asyncio.fixture
 async def seeded_client(db_session):
     """Insert a Client row and return it."""

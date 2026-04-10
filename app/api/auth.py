@@ -7,20 +7,24 @@ from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+import logging
+
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_active_user, get_token_data
 from app.core.rate_limit import limiter
 from app.core.redis import redis as redis_client
-from app.core.security import TokenData, create_access_token
+from app.core.security import TokenData, create_access_token, hash_password, verify_password
 from app.models.user import User, UserClient
-from app.schemas.auth import ClientInfo, TokenResponse, UserResponse
+from app.schemas.auth import ChangePasswordRequest, ClientInfo, TokenResponse, UserResponse
 from app.services.auth import (
     authenticate_user,
     find_or_create_google_user,
     get_default_client_id,
     get_user_clients,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -112,6 +116,31 @@ async def switch_client(
         raise HTTPException(status_code=403, detail="You don't have access to that client")
     token = _issue_token(current_user, client_id)
     return TokenResponse(access_token=token)
+
+
+@router.post("/change-password", status_code=200)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Allow a user to change their own password.
+
+    Requires the current password for verification. Google OAuth users who have
+    no password set cannot use this endpoint — they must log in via Google.
+    """
+    if not current_user.hashed_password:
+        raise HTTPException(
+            status_code=400,
+            detail="Account uses Google login — set a password by logging in with Google",
+        )
+    if not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    current_user.hashed_password = hash_password(body.new_password)
+    await db.commit()
+    logger.info("Password changed", extra={"user_id": current_user.id})
+    return {"message": "Password updated successfully"}
 
 
 @router.get("/google")

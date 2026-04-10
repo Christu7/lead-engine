@@ -12,6 +12,7 @@ from app.models.company import Company
 from app.schemas.lead import LeadCreate
 from app.services.company import auto_link_leads_by_domain, _normalize_domain
 from app.services.lead import upsert_lead
+from app.services.provider_usage import record_provider_usage
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,15 @@ class ApolloCompanyEnrichmentService:
                 extra={"company_id": str(company.id), "client_id": client_id},
             )
 
+        record_provider_usage(
+            db,
+            client_id=client_id,
+            provider="apollo",
+            operation="company_enrich",
+            entity_id=str(company.id),
+            records_returned=1 if org else 0,
+        )
+
         await auto_link_leads_by_domain(db, company, client_id)
 
         return company
@@ -250,6 +260,8 @@ class ApolloCompanyEnrichmentService:
         db: AsyncSession,
         company: Company,
         client_id: int,
+        filters: "ContactPullFilters | None" = None,
+        # Legacy kwargs kept for any direct callers that have not been updated yet.
         titles: list[str] | None = None,
         seniorities: list[str] | None = None,
         limit: int = 25,
@@ -258,7 +270,21 @@ class ApolloCompanyEnrichmentService:
 
         company.apollo_id must be set (enrich the company first).
         Returns summary dict with total_found, pulled, created, updated counts.
+
+        Accepts either a ContactPullFilters object (preferred) or the legacy
+        keyword arguments titles/seniorities/limit. When both are provided,
+        the ContactPullFilters object takes precedence.
         """
+        from app.schemas.company import ContactPullFilters
+
+        # Normalise: build a ContactPullFilters from legacy kwargs if needed
+        if filters is None:
+            filters = ContactPullFilters(
+                titles=titles or [],
+                seniorities=seniorities or [],
+                limit=limit,
+            )
+
         if not company.apollo_id:
             raise ValueError(
                 f"Company must be enriched first (apollo_id is missing) — company_id={company.id}"
@@ -270,13 +296,37 @@ class ApolloCompanyEnrichmentService:
             extra={"company_id": str(company.id), "client_id": client_id},
         )
 
-        payload = {
+        # ── Translate ContactPullFilters → Apollo API parameters ──────────────
+        # All Apollo-specific field names are confined to this block.
+        # person_titles, person_seniorities, person_locations, q_keywords are
+        # Apollo's parameter names and must not appear outside this module.
+        payload: dict = {
             "organization_ids": [company.apollo_id],
-            "person_titles": titles or [],
-            "person_seniorities": seniorities or [],
-            "per_page": min(limit, 100),
+            "person_titles": filters.titles,
+            "person_seniorities": filters.seniorities,
+            "per_page": min(filters.limit, 100),
             "page": 1,
         }
+
+        if filters.contact_locations:
+            # Apollo's parameter is named person_locations; the translation lives here only.
+            payload["person_locations"] = filters.contact_locations
+
+        if filters.include_keywords:
+            # Apollo accepts a free-text keyword query; join multiple keywords with spaces.
+            payload["q_keywords"] = " ".join(filters.include_keywords)
+
+        if filters.exclude_keywords:
+            # Apollo's mixed_people/api_search has no direct exclusion parameter.
+            # excluded keywords are applied as a post-filter below after results arrive.
+            logger.info(
+                "Apollo contact pull: exclude_keywords will be applied as client-side post-filter "
+                "(Apollo API does not support direct exclusion)",
+                extra={
+                    "company_id": str(company.id),
+                    "exclude_keywords": filters.exclude_keywords,
+                },
+            )
 
         try:
             headers = await _apollo_headers(db)
@@ -304,6 +354,21 @@ class ApolloCompanyEnrichmentService:
                         "total_entries": total_found,
                     },
                 )
+
+                # Capture pre-filter count before exclude_keywords is applied.
+                # records_returned in ProviderUsageLog tracks what the API returned,
+                # not what survived our client-side filter.
+                returned_from_provider = len(people)
+
+                # Apply exclude_keywords post-filter (Apollo has no native exclusion)
+                if filters.exclude_keywords:
+                    exclude_lower = [kw.lower() for kw in filters.exclude_keywords]
+                    people = [
+                        p for p in people
+                        if not any(kw in (p.get("title") or "").lower() for kw in exclude_lower)
+                    ]
+
+                filtered_out_count = returned_from_provider - len(people)
 
                 created_count = 0
                 updated_count = 0
@@ -412,6 +477,33 @@ class ApolloCompanyEnrichmentService:
                 "duration_ms": duration_ms,
             },
         )
+
+        # 1 request for the api_search + 1 per reveal (reveals cost 1 credit each;
+        # the api_search itself is free on standard Apollo plans).
+        # records_returned reflects what Apollo sent back BEFORE our exclude_keywords
+        # post-filter, because that is the actual provider usage, not our filtering.
+        record_provider_usage(
+            db,
+            client_id=client_id,
+            provider="apollo",
+            operation="contact_pull",
+            entity_id=str(company.id),
+            request_count=1 + reveal_attempts,
+            records_returned=returned_from_provider,
+            credits_estimated=reveal_attempts,
+            extra={
+                "requested_count": filters.limit,
+                "total_found": total_found,
+                "returned_from_provider": returned_from_provider,
+                "filtered_out_count": filtered_out_count,
+                "final_saved_count": created_count + updated_count,
+                "reveal_attempts": reveal_attempts,
+                "reveals_succeeded": reveals_succeeded,
+            },
+        )
+        # Ensure usage log is committed even when no lead needed a company_id update
+        # (those are the only other commits in this function).
+        await db.commit()
 
         return {
             "total_found": total_found,

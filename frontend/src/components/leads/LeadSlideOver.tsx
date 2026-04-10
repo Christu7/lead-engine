@@ -46,21 +46,31 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
     return () => stopPolling();
   }, [leadId]);
 
-  // Poll while ai_status === "analyzing"
+  // Poll while ai_status === "analyzing".
+  // Retries up to MAX_POLL_FAILURES consecutive errors before giving up so a
+  // transient network hiccup does not permanently kill the poll.
   useEffect(() => {
     if (!leadId || !detail) return;
 
     if (detail.ai_status === "analyzing") {
       if (pollRef.current === null) {
+        let consecutiveFailures = 0;
+        const MAX_POLL_FAILURES = 3;
+
         pollRef.current = setInterval(async () => {
           try {
             const updated = await fetchLeadDetail(leadId);
+            consecutiveFailures = 0;
             setDetail(updated);
             if (updated.ai_status !== "analyzing") {
               stopPolling();
             }
           } catch {
-            stopPolling();
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_POLL_FAILURES) {
+              stopPolling();
+            }
+            // else: retry at next interval tick
           }
         }, 3000);
       }
@@ -81,8 +91,8 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
       setFeedback("Enrichment queued");
       const updated = await fetchLeadDetail(leadId);
       setDetail(updated);
-    } catch {
-      setFeedback("Enrichment failed");
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Enrichment failed");
     } finally {
       setEnriching(false);
     }
@@ -93,11 +103,11 @@ export default function LeadSlideOver({ leadId, onClose }: LeadSlideOverProps) {
     setFeedback(null);
     try {
       await routeLead(leadId);
-      setFeedback("Routed successfully");
+      setFeedback("Routing queued");
       const updated = await fetchLeadDetail(leadId);
       setDetail(updated);
-    } catch {
-      setFeedback("Routing failed");
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : "Routing failed");
     } finally {
       setRouting(false);
     }

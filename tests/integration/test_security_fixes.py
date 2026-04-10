@@ -381,3 +381,204 @@ class TestBulkUpsertCompanyLinking:
             )
         ).scalar_one()
         assert lead.company_id is None
+
+
+# ---------------------------------------------------------------------------
+# 6. client_deactivation_blocks_jwt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestClientDeactivationBlocksJWT:
+    """Deactivating a client must immediately block JWT access and invalidate tokens."""
+
+    async def test_jwt_access_blocked_after_client_deactivation(
+        self, http_client, db_session, seeded_users, seeded_client
+    ):
+        """A valid JWT for an active client returns 200; after deactivation it is rejected."""
+        from app.schemas.client import ClientUpdate
+        from app.services.client import update_client as svc_update_client
+
+        member = seeded_users["member"]
+        token = create_access_token(
+            user_id=member.id,
+            email=member.email,
+            role="member",
+            active_client_id=seeded_client.id,
+            token_version=member.token_version,
+        )
+
+        # Confirm the token works before deactivation
+        resp = await http_client.get("/api/leads/", headers=_auth(token))
+        assert resp.status_code == 200
+
+        # Deactivate the client — this also bumps token_version for all members
+        await svc_update_client(db_session, seeded_client.id, ClientUpdate(is_active=False))
+
+        # The same JWT must now be rejected
+        resp = await http_client.get("/api/leads/", headers=_auth(token))
+        assert resp.status_code != 200, (
+            "JWT was accepted after client deactivation — get_client_id did not "
+            "validate client.is_active"
+        )
+
+    async def test_token_version_incremented_for_all_client_members_on_deactivation(
+        self, db_session, seeded_users, seeded_client
+    ):
+        """All user token_versions in the client must be bumped so old JWTs are dead."""
+        from app.schemas.client import ClientUpdate
+        from app.services.client import update_client as svc_update_client
+        from app.models.user import User
+
+        member = seeded_users["member"]
+        admin = seeded_users["admin"]
+        pre_member_version = member.token_version
+        pre_admin_version = admin.token_version
+
+        await svc_update_client(db_session, seeded_client.id, ClientUpdate(is_active=False))
+
+        await db_session.refresh(member)
+        await db_session.refresh(admin)
+
+        assert member.token_version == pre_member_version + 1, (
+            "member token_version was not incremented on client deactivation"
+        )
+        assert admin.token_version == pre_admin_version + 1, (
+            "admin token_version was not incremented on client deactivation"
+        )
+
+    async def test_only_superadmin_can_deactivate_via_api(
+        self, http_client, db_session, seeded_users, seeded_client
+    ):
+        """An admin (not superadmin) must receive 403 when trying to set is_active=False."""
+        admin = seeded_users["admin"]
+        token = create_access_token(
+            user_id=admin.id,
+            email=admin.email,
+            role="admin",
+            active_client_id=seeded_client.id,
+            token_version=admin.token_version,
+        )
+
+        resp = await http_client.patch(
+            f"/api/clients/{seeded_client.id}",
+            headers=_auth(token),
+            json={"is_active": False},
+        )
+        assert resp.status_code == 403
+
+    async def test_membership_revocation_blocks_access(
+        self, http_client, db_session, seeded_users, seeded_client
+    ):
+        """Removing a user from user_clients must cause get_client_id to return 403."""
+        from app.models.user import UserClient
+
+        member = seeded_users["member"]
+        token = create_access_token(
+            user_id=member.id,
+            email=member.email,
+            role="member",
+            active_client_id=seeded_client.id,
+            token_version=member.token_version,
+        )
+
+        # Confirm access is granted before removal
+        resp = await http_client.get("/api/leads/", headers=_auth(token))
+        assert resp.status_code == 200
+
+        # Remove the user from the client directly
+        membership = (
+            await db_session.execute(
+                select(UserClient).where(
+                    UserClient.user_id == member.id,
+                    UserClient.client_id == seeded_client.id,
+                )
+            )
+        ).scalar_one()
+        await db_session.delete(membership)
+        await db_session.commit()
+
+        # Access must now be denied — JWT is still valid but membership is gone
+        resp = await http_client.get("/api/leads/", headers=_auth(token))
+        assert resp.status_code == 403, (
+            "Request was not rejected after user was removed from client — "
+            "get_client_id did not verify user_clients membership"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. client_deactivation_blocks_api_key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestClientDeactivationBlocksAPIKey:
+    """Deactivating a client must immediately block webhook API-key access."""
+
+    async def test_api_keys_deactivated_on_client_deactivation(
+        self, db_session, seeded_client, seeded_api_key
+    ):
+        """API keys linked to the client must have is_active=False after deactivation."""
+        from app.models.user import ApiKey
+        from app.schemas.client import ClientUpdate
+        from app.services.auth import hash_api_key
+        from app.services.client import update_client as svc_update_client
+
+        await svc_update_client(db_session, seeded_client.id, ClientUpdate(is_active=False))
+
+        api_key_row = (
+            await db_session.execute(
+                select(ApiKey).where(ApiKey.key == hash_api_key(seeded_api_key))
+            )
+        ).scalar_one()
+        assert api_key_row.is_active is False, (
+            "API key was not deactivated when its client was deactivated"
+        )
+
+    async def test_webhook_blocked_after_client_deactivation(
+        self, http_client, db_session, seeded_client, seeded_api_key
+    ):
+        """Webhook requests using an API key for a deactivated client must be rejected."""
+        from app.schemas.client import ClientUpdate
+        from app.services.client import update_client as svc_update_client
+
+        # Deactivation deactivates the API key as a side effect
+        await svc_update_client(db_session, seeded_client.id, ClientUpdate(is_active=False))
+
+        resp = await http_client.post(
+            "/api/webhooks/leads",
+            headers={"X-Api-Key": seeded_api_key},
+            json={"name": "Test Lead", "email": "test@example.com"},
+        )
+        assert resp.status_code != 201, (
+            "Webhook was accepted after client deactivation — API key or client "
+            "active check is not enforced"
+        )
+
+    async def test_active_api_key_for_inactive_client_blocked_by_dep(
+        self, http_client, db_session, seeded_client, seeded_api_key
+    ):
+        """get_client_id_from_api_key must reject an active API key if its client is
+        inactive — this covers the case where deactivation side effects are bypassed
+        (e.g., direct DB write) but the client row is still marked inactive."""
+        from sqlalchemy import update as sa_update
+        from app.models.client import Client
+
+        # Mark the client inactive without going through update_client,
+        # so the API key retains is_active=True
+        await db_session.execute(
+            sa_update(Client)
+            .where(Client.id == seeded_client.id)
+            .values(is_active=False)
+        )
+        await db_session.commit()
+
+        resp = await http_client.post(
+            "/api/webhooks/leads",
+            headers={"X-Api-Key": seeded_api_key},
+            json={"name": "Test Lead", "email": "test@example.com"},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 from get_client_id_from_api_key for inactive client, "
+            f"got {resp.status_code}"
+        )

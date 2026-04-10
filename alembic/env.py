@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 from app.core.config import settings
-from app.models import ApiKeyStore, Client, Company, Lead, EnrichmentLog, RoutingLog, ScoringRule, User, ApiKey, WebhookLog  # noqa: F401
+from app.models import ApiKeyStore, Client, Company, Lead, EnrichmentLog, ProviderUsageLog, RoutingLog, ScoringRule, User, ApiKey, WebhookLog  # noqa: F401
 from app.core.database import Base
 
 config = context.config

@@ -9,6 +9,7 @@ import {
   removeUserFromWorkspace,
   updateAdminClient,
   deleteAdminClient,
+  resetUserPassword,
   type AdminClient,
   type AdminUser,
 } from "../api/admin";
@@ -354,6 +355,99 @@ function ManageWorkspacesModal({
   );
 }
 
+// ── Reset Password Modal ───────────────────────────────────────────────────────
+
+function ResetPasswordModal({
+  user,
+  onClose,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+}) {
+  const [newPassword, setNewPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; type: "ok" | "err" } | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg(null);
+    if (newPassword.length < 8) {
+      setMsg({ text: "Password must be at least 8 characters", type: "err" });
+      return;
+    }
+    setSaving(true);
+    try {
+      await resetUserPassword(user.id, newPassword);
+      setMsg({ text: "Password reset", type: "ok" });
+      setNewPassword("");
+    } catch (err) {
+      setMsg({ text: err instanceof Error ? err.message : "Failed to reset password", type: "err" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b px-5 py-4">
+            <div>
+              <h3 className="text-base font-semibold text-gray-900">Reset Password</h3>
+              <p className="text-xs text-gray-500 mt-0.5">{user.name ?? user.email}</p>
+            </div>
+            <button onClick={onClose} className="text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
+          </div>
+          <form onSubmit={handleSubmit}>
+            <div className="px-5 py-4 space-y-4">
+              {msg && (
+                <p className={`rounded-md px-3 py-2 text-sm ${msg.type === "ok" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
+                  {msg.text}
+                </p>
+              )}
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  New Password <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Min 8 characters"
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                  autoFocus
+                  required
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+              <p className="text-xs text-gray-400">
+                No current password required. The user's existing sessions will be invalidated.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t px-5 py-4">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? "Resetting…" : "Reset Password"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Users tab ──────────────────────────────────────────────────────────────────
 
 function UsersTab({
@@ -369,6 +463,7 @@ function UsersTab({
 }) {
   const [showAddUser, setShowAddUser] = useState(false);
   const [wsUser, setWsUser] = useState<AdminUser | null>(null);
+  const [resetPwUser, setResetPwUser] = useState<AdminUser | null>(null);
   const [roleSaving, setRoleSaving] = useState<Record<number, boolean>>({});
   const [activeSaving, setActiveSaving] = useState<Record<number, boolean>>({});
 
@@ -490,12 +585,20 @@ function UsersTab({
 
                   {/* Actions */}
                   <td className="px-4 py-2.5">
-                    <button
-                      onClick={() => setWsUser(u)}
-                      className="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:text-indigo-600"
-                    >
-                      Workspaces
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setWsUser(u)}
+                        className="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:text-indigo-600"
+                      >
+                        Workspaces
+                      </button>
+                      <button
+                        onClick={() => setResetPwUser(u)}
+                        className="rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 hover:text-indigo-600"
+                      >
+                        Reset Password
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -525,6 +628,13 @@ function UsersTab({
           allClients={clients}
           onClose={() => setWsUser(null)}
           onRefresh={onRefresh}
+        />
+      )}
+
+      {resetPwUser && (
+        <ResetPasswordModal
+          user={resetPwUser}
+          onClose={() => setResetPwUser(null)}
         />
       )}
     </div>

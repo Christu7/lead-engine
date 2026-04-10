@@ -43,6 +43,9 @@ export interface LeadSummary {
 export interface ContactPullRequest {
   titles: string[];
   seniorities: string[];
+  contact_locations: string[];
+  include_keywords: string[];
+  exclude_keywords: string[];
   limit: number;
 }
 

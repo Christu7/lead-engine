@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 
 class AdminCreateUser(BaseModel):
@@ -19,6 +19,14 @@ class AdminUpdateUser(BaseModel):
     name: str | None = None
     role: str | None = None
     is_active: bool | None = None
+    new_password: str | None = None
+
+    @field_validator("new_password")
+    @classmethod
+    def password_min_length(cls, v: str | None) -> str | None:
+        if v is not None and len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
 
 
 class AdminUserClientInfo(BaseModel):

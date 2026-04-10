@@ -104,8 +104,14 @@ async def list_companies(
             query = query.where(Company.enrichment_status == filters["enrichment_status"])
         if filters.get("abm_status"):
             query = query.where(Company.abm_status == filters["abm_status"])
+        else:
+            # Exclude soft-deleted companies from the default view
+            query = query.where(Company.abm_status != "inactive")
         if filters.get("industry"):
             query = query.where(Company.industry == filters["industry"])
+    else:
+        # No filters at all — still exclude soft-deleted
+        query = query.where(Company.abm_status != "inactive")
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar_one()

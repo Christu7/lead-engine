@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, apiError } from "./client";
 import type { Company, CompanyBulkUploadResponse, CompanyDetail, ContactPullRequest } from "../types/company";
 
 export interface CompanyFilters {
@@ -21,13 +21,13 @@ export async function getCompanies(
     }
   }
   const res = await apiFetch(`/companies/?${qs.toString()}`);
-  if (!res.ok) throw new Error("Failed to fetch companies");
+  if (!res.ok) await apiError(res, "Failed to fetch companies");
   return res.json();
 }
 
 export async function getCompany(id: string): Promise<CompanyDetail> {
   const res = await apiFetch(`/companies/${id}`);
-  if (!res.ok) throw new Error("Failed to fetch company");
+  if (!res.ok) await apiError(res, "Failed to fetch company");
   return res.json();
 }
 
@@ -37,8 +37,9 @@ export async function createCompany(data: Partial<Company>): Promise<Company> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+  // 409 gets its own message — keep it; let apiError handle everything else
   if (res.status === 409) throw new Error("A company with that domain already exists");
-  if (!res.ok) throw new Error("Failed to create company");
+  if (!res.ok) await apiError(res, "Failed to create company");
   return res.json();
 }
 
@@ -48,19 +49,19 @@ export async function updateCompany(id: string, data: Partial<Company>): Promise
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("Failed to update company");
+  if (!res.ok) await apiError(res, "Failed to update company");
   return res.json();
 }
 
 export async function deleteCompany(id: string): Promise<void> {
   const res = await apiFetch(`/companies/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete company");
+  if (!res.ok) await apiError(res, "Failed to delete company");
 }
 
 export async function enrichCompany(id: string): Promise<void> {
   const res = await apiFetch(`/companies/${id}/enrich`, { method: "POST" });
   if (res.status === 409) throw new Error("Enrichment already in progress");
-  if (!res.ok) throw new Error("Failed to start enrichment");
+  if (!res.ok) await apiError(res, "Failed to start enrichment");
 }
 
 export async function pullContacts(id: string, filters: ContactPullRequest): Promise<void> {
@@ -70,12 +71,12 @@ export async function pullContacts(id: string, filters: ContactPullRequest): Pro
     body: JSON.stringify(filters),
   });
   if (res.status === 400) throw new Error("Company must be enriched before pulling contacts");
-  if (!res.ok) throw new Error("Failed to start contact pull");
+  if (!res.ok) await apiError(res, "Failed to start contact pull");
 }
 
 export async function bulkEnrichCompanies(): Promise<{ queued: number }> {
   const res = await apiFetch("/companies/bulk-enrich", { method: "POST" });
-  if (!res.ok) throw new Error("Failed to start bulk enrichment");
+  if (!res.ok) await apiError(res, "Failed to start bulk enrichment");
   return res.json();
 }
 
@@ -92,6 +93,6 @@ export async function uploadCompaniesCsv(
     method: "POST",
     body: form,
   });
-  if (!res.ok) throw new Error("Failed to upload CSV");
+  if (!res.ok) await apiError(res, "Failed to upload CSV");
   return res.json();
 }

@@ -66,6 +66,9 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
   const [showPullForm, setShowPullForm] = useState(false);
   const [pullTitles, setPullTitles] = useState("");
   const [pullSeniorities, setPullSeniorities] = useState<string[]>([]);
+  const [pullLocations, setPullLocations] = useState("");
+  const [pullIncludeKeywords, setPullIncludeKeywords] = useState("");
+  const [pullExcludeKeywords, setPullExcludeKeywords] = useState("");
   const [pullLimit, setPullLimit] = useState(25);
   const [pulling, setPulling] = useState(false);
 
@@ -95,15 +98,21 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
     return () => stopPolling();
   }, [companyId]);
 
-  // Poll while enriching
+  // Poll while enriching.
+  // Retries up to MAX_POLL_FAILURES consecutive errors before giving up so a
+  // transient network hiccup does not permanently kill the poll.
   useEffect(() => {
     if (!companyId || !detail) return;
 
     if (detail.enrichment_status === "enriching") {
       if (pollRef.current === null) {
+        let consecutiveFailures = 0;
+        const MAX_POLL_FAILURES = 3;
+
         pollRef.current = setInterval(async () => {
           try {
             const updated = await getCompany(companyId);
+            consecutiveFailures = 0;
             setDetail(updated);
             if (updated.enrichment_status !== "enriching") {
               stopPolling();
@@ -112,7 +121,11 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
               }
             }
           } catch {
-            stopPolling();
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_POLL_FAILURES) {
+              stopPolling();
+            }
+            // else: retry at next interval tick
           }
         }, 3000);
       }
@@ -146,13 +159,16 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
     setPulling(true);
     setFeedback(null);
     try {
-      const titles = pullTitles
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+      const titles = pullTitles.split(",").map((t) => t.trim()).filter(Boolean);
+      const contact_locations = pullLocations.split(",").map((t) => t.trim()).filter(Boolean);
+      const include_keywords = pullIncludeKeywords.split(",").map((t) => t.trim()).filter(Boolean);
+      const exclude_keywords = pullExcludeKeywords.split(",").map((t) => t.trim()).filter(Boolean);
       await pullContacts(companyId, {
         titles,
         seniorities: pullSeniorities,
+        contact_locations,
+        include_keywords,
+        exclude_keywords,
         limit: pullLimit,
       });
       setFeedback("Contact pull queued — leads will appear shortly");
@@ -351,6 +367,42 @@ export default function CompanyDetailPanel({ companyId, onClose, onEnriched }: C
                         </label>
                       ))}
                     </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      Locations (comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullLocations}
+                      onChange={(e) => setPullLocations(e.target.value)}
+                      placeholder="New York, United Kingdom"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      Include Keywords (comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullIncludeKeywords}
+                      onChange={(e) => setPullIncludeKeywords(e.target.value)}
+                      placeholder="SaaS, cloud"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      Exclude Keywords (comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullExcludeKeywords}
+                      onChange={(e) => setPullExcludeKeywords(e.target.value)}
+                      placeholder="intern, consultant"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600">Limit</label>

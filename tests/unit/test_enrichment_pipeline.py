@@ -28,6 +28,13 @@ def _make_db(lead: Lead, client: Client):
     db.add = MagicMock()
     db.delete = MagicMock()
 
+    # pipeline.run() fetches the lead via db.execute(select(Lead).where(...))
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = lead
+    db.execute = AsyncMock(return_value=mock_result)
+
+    # Client is still fetched via db.get(Client, client_id);
+    # Lead is also fetched via db.get(Lead, lead_id) in the security-check path
     async def mock_get(model, pk):
         if model is Lead:
             return lead
@@ -342,6 +349,11 @@ class TestEnrichmentPipeline:
 
     async def test_lead_not_found_returns_early(self):
         db = MagicMock()
+        # pipeline first fetches lead via db.execute(select(Lead).where(...))
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        db.execute = AsyncMock(return_value=mock_result)
+        # then falls through to db.get(Lead, lead_id) for the security check
         db.get = AsyncMock(return_value=None)
         db.commit = AsyncMock()
 

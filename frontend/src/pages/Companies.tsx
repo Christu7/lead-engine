@@ -7,7 +7,9 @@ import {
   useReactTable,
   type RowSelectionState,
 } from "@tanstack/react-table";
-import { bulkEnrichCompanies, enrichCompany, getCompanies, pullContacts } from "../api/companies";
+import { bulkEnrichCompanies, deleteCompany, enrichCompany, getCompanies, pullContacts } from "../api/companies";
+import { runBulk, bulkResultToast } from "../utils/bulk";
+import DeleteConfirmModal from "../components/DeleteConfirmModal";
 import type { Company } from "../types/company";
 import CompanyDetailPanel from "../components/companies/CompanyDetailPanel";
 import AddCompanyModal from "../components/companies/AddCompanyModal";
@@ -106,7 +108,7 @@ const SORT_DEFAULTS = { sort_by: "created_at", sort_order: "desc" } as const;
 
 export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { user } = useAuth();
+  const { user, clientVersion } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
 
   // Server-side data
@@ -157,21 +159,25 @@ export default function Companies() {
   const [toast, setToast] = useState<string | null>(null);
   const [bulkEnriching, setBulkEnriching] = useState(false);
   const [enrichingSelected, setEnrichingSelected] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Custom field definitions
   const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
 
   useEffect(() => {
     getCustomFieldDefinitions("company").then(setCustomFieldDefs).catch(() => {});
-  }, []); // fetch once on mount
+  }, [clientVersion]); // re-fetch when workspace changes
 
   // Pull Contacts state
   const [showPullPopover, setShowPullPopover] = useState(false);
   const [pullSeniorities, setPullSeniorities] = useState<string[]>(["vp", "director", "c_suite"]);
   const [pullTitles, setPullTitles] = useState("");
+  const [pullLocations, setPullLocations] = useState("");
+  const [pullIncludeKeywords, setPullIncludeKeywords] = useState("");
+  const [pullExcludeKeywords, setPullExcludeKeywords] = useState("");
   const [pullLimit, setPullLimit] = useState(25);
   const [pullingContacts, setPullingContacts] = useState(false);
-  const [pullProgress, setPullProgress] = useState("");
 
   const tablePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -182,34 +188,50 @@ export default function Companies() {
     }
   };
 
-  const showToast = (msg: string) => {
+  // Stable — wrapping setToast so the toast helper can be listed in effect deps.
+  const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 4000);
-  };
+  }, []);
 
-  const fetchCompanies = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await getCompanies({
-        skip,
-        limit,
-        enrichment_status: enrichmentFilter || undefined,
-        abm_status: abmFilter || undefined,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      });
-      setCompanies(res.items);
-      setTotal(res.total);
-    } catch {
-      showToast("Failed to load companies");
-    } finally {
-      setLoading(false);
-    }
-  }, [skip, limit, enrichmentFilter, abmFilter, sortBy, sortOrder]);
+  // Manual refetch trigger — incrementing this causes the fetch effect below to
+  // re-run (after bulk actions, enrichment, delete, etc.).
+  const [refetchKey, setRefetchKey] = useState(0);
+  const fetchCompanies = useCallback(() => setRefetchKey((k) => k + 1), []);
 
+  // ── Main data fetch with cancellation ────────────────────────────────────
+  // clientVersion is intentionally included: when the workspace changes the
+  // cleanup sets cancelled=true (discarding any stale response) and a fresh
+  // request is made for the new workspace.
   useEffect(() => {
-    fetchCompanies();
-  }, [fetchCompanies]);
+    let cancelled = false;
+    setLoading(true);
+
+    getCompanies({
+      skip,
+      limit,
+      enrichment_status: enrichmentFilter || undefined,
+      abm_status: abmFilter || undefined,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    })
+      .then((res) => {
+        if (!cancelled) {
+          setCompanies(res.items);
+          setTotal(res.total);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) showToast("Failed to load companies");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [skip, limit, enrichmentFilter, abmFilter, sortBy, sortOrder, refetchKey, clientVersion, showToast]);
 
   // Poll every 5 s while any visible company is still enriching
   useEffect(() => {
@@ -363,17 +385,14 @@ export default function Companies() {
 
   const handleEnrichSelected = async () => {
     setEnrichingSelected(true);
-    let ok = 0;
-    for (const id of selectedIds) {
-      try {
-        await enrichCompany(id);
-        ok++;
-      } catch {
-        // individual failure — continue others
-      }
+    const { succeeded, failed } = await runBulk(selectedIds, enrichCompany);
+    showToast(bulkResultToast("queued for enrichment", succeeded.length, failed.length));
+    // Keep failed items selected so the user can see which ones need attention
+    if (failed.length > 0) {
+      setRowSelection(Object.fromEntries(failed.map((id) => [id, true])));
+    } else {
+      setRowSelection({});
     }
-    showToast(`Queued ${ok} of ${selectedIds.length} for enrichment`);
-    setRowSelection({});
     setEnrichingSelected(false);
     fetchCompanies();
   };
@@ -388,27 +407,44 @@ export default function Companies() {
     .map((c) => c.id);
   const unenrichedCount = selectedCompanies.length - enrichedSelectedIds.length;
 
+  const handleDeleteSelected = async () => {
+    setDeleting(true);
+    const { succeeded, failed } = await runBulk(selectedIds, deleteCompany);
+    setDeleting(false);
+    setShowDeleteModal(false);
+    showToast(bulkResultToast("deleted", succeeded.length, failed.length));
+    if (failed.length > 0) {
+      setRowSelection(Object.fromEntries(failed.map((id) => [id, true])));
+    } else {
+      setRowSelection({});
+    }
+    fetchCompanies();
+  };
+
   const handlePullContacts = async () => {
     setShowPullPopover(false);
     setPullingContacts(true);
-    const titles = pullTitles
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    let ok = 0;
-    for (let i = 0; i < enrichedSelectedIds.length; i++) {
-      setPullProgress(`Pulling contacts from company ${i + 1} of ${enrichedSelectedIds.length}…`);
-      try {
-        await pullContacts(enrichedSelectedIds[i], { titles, seniorities: pullSeniorities, limit: pullLimit });
-        ok++;
-      } catch {
-        // individual failure — continue others
-      }
-    }
+    const titles = pullTitles.split(",").map((t) => t.trim()).filter(Boolean);
+    const contact_locations = pullLocations.split(",").map((t) => t.trim()).filter(Boolean);
+    const include_keywords = pullIncludeKeywords.split(",").map((t) => t.trim()).filter(Boolean);
+    const exclude_keywords = pullExcludeKeywords.split(",").map((t) => t.trim()).filter(Boolean);
+    const { succeeded, failed } = await runBulk(enrichedSelectedIds, (id) =>
+      pullContacts(id, {
+        titles,
+        seniorities: pullSeniorities,
+        contact_locations,
+        include_keywords,
+        exclude_keywords,
+        limit: pullLimit,
+      }),
+    );
     setPullingContacts(false);
-    setPullProgress("");
-    setRowSelection({});
-    showToast(`Pulled contacts from ${ok} of ${enrichedSelectedIds.length} companies`);
+    if (failed.length > 0) {
+      setRowSelection(Object.fromEntries(failed.map((id) => [id, true])));
+    } else {
+      setRowSelection({});
+    }
+    showToast(bulkResultToast("companies' contacts queued", succeeded.length, failed.length));
     fetchCompanies();
   };
 
@@ -464,18 +500,23 @@ export default function Companies() {
         </select>
 
         <div className="ml-auto flex items-center gap-2">
-          {/* Pull progress text */}
-          {pullingContacts && (
-            <span className="text-xs text-gray-500">{pullProgress}</span>
+          {selectedIds.length > 0 && (
+            <button
+              onClick={handleEnrichSelected}
+              disabled={enrichingSelected || pullingContacts || deleting}
+              className="rounded-md bg-yellow-500 px-3 py-2 text-sm font-medium text-white hover:bg-yellow-600 disabled:opacity-50"
+            >
+              {enrichingSelected ? "Queuing…" : `Enrich Selected (${selectedIds.length})`}
+            </button>
           )}
 
           {selectedIds.length > 0 && (
             <button
-              onClick={handleEnrichSelected}
-              disabled={enrichingSelected || pullingContacts}
-              className="rounded-md bg-yellow-500 px-3 py-2 text-sm font-medium text-white hover:bg-yellow-600 disabled:opacity-50"
+              onClick={() => setShowDeleteModal(true)}
+              disabled={enrichingSelected || pullingContacts || deleting}
+              className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
             >
-              {enrichingSelected ? "Queuing…" : `Enrich Selected (${selectedIds.length})`}
+              Delete Selected ({selectedIds.length})
             </button>
           )}
 
@@ -487,7 +528,7 @@ export default function Companies() {
                 disabled={pullingContacts || enrichingSelected}
                 className="rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
               >
-                {pullingContacts ? pullProgress || "Pulling…" : `Pull Contacts (${selectedIds.length})`}
+                {pullingContacts ? "Pulling…" : `Pull Contacts (${selectedIds.length})`}
               </button>
 
               {showPullPopover && (
@@ -528,6 +569,48 @@ export default function Companies() {
                       value={pullTitles}
                       onChange={(e) => setPullTitles(e.target.value)}
                       placeholder="CEO, Head of IT, Digital Transformation"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Locations */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Locations (optional, comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullLocations}
+                      onChange={(e) => setPullLocations(e.target.value)}
+                      placeholder="New York, United Kingdom"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Include Keywords */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Include Keywords (optional, comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullIncludeKeywords}
+                      onChange={(e) => setPullIncludeKeywords(e.target.value)}
+                      placeholder="SaaS, cloud"
+                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Exclude Keywords */}
+                  <div className="mb-3">
+                    <label className="mb-1 block text-xs font-medium text-gray-700">
+                      Exclude Keywords (optional, comma-separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={pullExcludeKeywords}
+                      onChange={(e) => setPullExcludeKeywords(e.target.value)}
+                      placeholder="intern, consultant"
                       className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
@@ -735,6 +818,18 @@ export default function Companies() {
         onClose={() => setSelectedCompanyId(null)}
         onEnriched={fetchCompanies}
       />
+
+      {/* ── Delete Confirm Modal ── */}
+      {showDeleteModal && (
+        <DeleteConfirmModal
+          count={selectedIds.length}
+          entityLabel="company"
+          warning={`This will mark ${selectedIds.length} ${selectedIds.length === 1 ? "company" : "companies"} as inactive (soft delete). They will no longer appear in the default view.`}
+          onConfirm={handleDeleteSelected}
+          onCancel={() => setShowDeleteModal(false)}
+          deleting={deleting}
+        />
+      )}
 
       {/* ── Toast ── */}
       {toast && (

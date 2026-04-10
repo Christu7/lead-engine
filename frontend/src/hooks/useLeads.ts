@@ -10,7 +10,12 @@ const DEFAULTS = {
   offset: "0",
 };
 
-export function useLeads() {
+/**
+ * @param clientVersion - Increment this value whenever the active workspace
+ *   changes.  The hook will cancel any in-flight request from the previous
+ *   workspace and issue a fresh one for the new workspace.
+ */
+export function useLeads(clientVersion: number = 0) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
@@ -86,7 +91,10 @@ export function useLeads() {
     return () => {
       cancelled = true;
     };
-  }, [searchParams]);
+    // clientVersion is intentionally included: when the workspace changes the
+    // previous cleanup sets cancelled=true (discarding any stale response) and
+    // a fresh request is issued for the new workspace.
+  }, [searchParams, clientVersion]);
 
   return { items, total, loading, limit, offset, sortBy, sortOrder, setFilter, setSort };
 }

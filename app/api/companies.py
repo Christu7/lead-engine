@@ -33,6 +33,7 @@ from app.schemas.company import (
     CompanyDetailResponse,
     CompanyResponse,
     CompanyUpdate,
+    ContactPullFilters,
     ContactPullRequest,
 )
 from app.schemas.lead import LeadResponse
@@ -91,11 +92,9 @@ async def _bg_enrich_company(company_id: uuid.UUID, client_id: int) -> None:
 async def _bg_pull_contacts(
     company_id: uuid.UUID,
     client_id: int,
-    titles: list[str],
-    seniorities: list[str],
-    limit: int,
+    filters: ContactPullFilters,
 ) -> None:
-    """Background task: pull Apollo contacts for a company and upsert as leads."""
+    """Background task: pull contacts for a company and upsert as leads."""
     from app.core.database import async_session
     from app.services.apollo_company import ApolloCompanyEnrichmentService
     from app.services.company import get_company as _get_company
@@ -114,9 +113,7 @@ async def _bg_pull_contacts(
                 )
                 return
             svc = ApolloCompanyEnrichmentService()
-            await svc.pull_contacts_from_company(
-                db, company, client_id, titles=titles, seniorities=seniorities, limit=limit
-            )
+            await svc.pull_contacts_from_company(db, company, client_id, filters=filters)
     except Exception as exc:
         logger.error(
             "Background: pull_contacts failed",
@@ -491,10 +488,10 @@ async def enrich_company_endpoint(
     }
 
 
-@router.post("/{company_id}/pull-contacts", status_code=202, summary="Pull Apollo contacts as leads")
+@router.post("/{company_id}/pull-contacts", status_code=202, summary="Pull contacts from Apollo for a company")
 async def pull_contacts_endpoint(
     company_id: uuid.UUID,
-    body: ContactPullRequest,
+    body: ContactPullFilters,
     background_tasks: BackgroundTasks,
     client_id: int = Depends(get_client_id),
     db: AsyncSession = Depends(get_db),
@@ -512,9 +509,7 @@ async def pull_contacts_endpoint(
         _bg_pull_contacts,
         company_id,
         client_id,
-        body.titles,
-        body.seniorities,
-        body.limit,
+        body,
     )
 
     logger.info(

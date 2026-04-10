@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -188,6 +189,22 @@ async def get_leads_by_apollo_ids(db: AsyncSession, apollo_ids: list[str], clien
     return {lead.apollo_id: lead for lead in result.scalars().all()}
 
 
+def _apply_lead_fields(lead: Lead, data: LeadCreate) -> None:
+    """Merge non-None fields from data into lead in-place.
+
+    enrichment_data is shallow-merged so existing provider keys are preserved.
+    All other fields are set only when the incoming value is not None, to avoid
+    clobbering richer existing data with a sparse update payload.
+    """
+    for key, value in data.model_dump(exclude_unset=True).items():
+        if key == "enrichment_data" and value is not None:
+            merged = dict(lead.enrichment_data or {})
+            merged.update(value)
+            lead.enrichment_data = merged
+        elif value is not None:
+            setattr(lead, key, value)
+
+
 def _build_upsert_update_set(values: dict) -> dict:
     """Build the SET clause for ON CONFLICT DO UPDATE.
 
@@ -229,13 +246,7 @@ async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tup
         )
         existing = result.scalar_one_or_none()
         if existing is not None:
-            for key, value in data.model_dump(exclude_unset=True).items():
-                if key == "enrichment_data" and value is not None:
-                    merged = dict(existing.enrichment_data or {})
-                    merged.update(value)
-                    existing.enrichment_data = merged
-                elif value is not None:
-                    setattr(existing, key, value)
+            _apply_lead_fields(existing, data)
             await db.commit()
             await db.refresh(existing)
             await _try_auto_link_company(db, existing, client_id)
@@ -263,8 +274,50 @@ async def upsert_lead(db: AsyncSession, data: LeadCreate, client_id: int) -> tup
             set_=_build_upsert_update_set(values),
         )
     )
-    await db.execute(stmt)
-    await db.commit()
+    try:
+        await db.execute(stmt)
+        await db.commit()
+    except IntegrityError:
+        # The apollo_id partial unique index (ix_leads_apollo_id_client_unique)
+        # fired: a concurrent insert committed the same apollo_id between our
+        # SELECT (which returned None) and this INSERT.
+        # Strategy: rollback, re-query by apollo_id then email, update in place.
+        await db.rollback()
+        logger.warning(
+            "upsert_lead: IntegrityError on insert — concurrent apollo_id collision "
+            "for apollo_id=%s email=%s client=%d, re-querying",
+            data.apollo_id,
+            data.email,
+            client_id,
+            extra={"client_id": client_id},
+        )
+        conflict_lead: Lead | None = None
+        if data.apollo_id:
+            conflict_lead = (
+                await db.execute(
+                    select(Lead).where(
+                        Lead.apollo_id == data.apollo_id,
+                        Lead.client_id == client_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if conflict_lead is None:
+            conflict_lead = (
+                await db.execute(
+                    select(Lead).where(
+                        Lead.email == data.email,
+                        Lead.client_id == client_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if conflict_lead is None:
+            # Neither constraint points to an existing row — truly unexpected.
+            raise
+        _apply_lead_fields(conflict_lead, data)
+        await db.commit()
+        await db.refresh(conflict_lead)
+        await _try_auto_link_company(db, conflict_lead, client_id)
+        return conflict_lead, "updated"
 
     result = await db.execute(
         select(Lead).where(Lead.email == data.email, Lead.client_id == client_id)
@@ -313,6 +366,8 @@ async def bulk_upsert_leads(
             if on_duplicate == "update":
                 # Atomic upsert — handles races in the pre-fetch window.
                 # Lead.__table__ avoids ORM identity-map pollution (same reason as upsert_lead).
+                # begin_nested() issues a SAVEPOINT so an IntegrityError on the
+                # apollo_id partial unique index does not abort the outer transaction.
                 stmt = (
                     pg_insert(Lead.__table__)
                     .values(**values)
@@ -322,12 +377,58 @@ async def bulk_upsert_leads(
                     )
                     .returning(text("id"), text("(xmax <> 0) as was_updated"))
                 )
-                row = (await db.execute(stmt)).first()
-                if bool(row[1]):
-                    updated += 1
-                else:
-                    new_lead_ids.append(row[0])
-                    created += 1
+                try:
+                    async with db.begin_nested():
+                        row = (await db.execute(stmt)).first()
+                    if bool(row[1]):
+                        updated += 1
+                    else:
+                        new_lead_ids.append(row[0])
+                        created += 1
+                except IntegrityError:
+                    # apollo_id collision from a concurrent insert — savepoint
+                    # was rolled back automatically; outer transaction is intact.
+                    logger.warning(
+                        "bulk_upsert_leads: IntegrityError on update-mode insert for "
+                        "apollo_id=%s email=%s client=%d — re-querying",
+                        data.apollo_id,
+                        data.email,
+                        client_id,
+                        extra={"client_id": client_id},
+                    )
+                    conflict_lead: Lead | None = None
+                    if data.apollo_id:
+                        conflict_lead = (
+                            await db.execute(
+                                select(Lead).where(
+                                    Lead.apollo_id == data.apollo_id,
+                                    Lead.client_id == client_id,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if conflict_lead is None:
+                        conflict_lead = (
+                            await db.execute(
+                                select(Lead).where(
+                                    Lead.email == data.email,
+                                    Lead.client_id == client_id,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if conflict_lead is not None:
+                        _apply_lead_fields(conflict_lead, data)
+                        updated_lead_ids.append(conflict_lead.id)
+                        updated += 1
+                    else:
+                        logger.error(
+                            "bulk_upsert_leads: IntegrityError but no row found for "
+                            "apollo_id=%s email=%s client=%d — skipping",
+                            data.apollo_id,
+                            data.email,
+                            client_id,
+                            extra={"client_id": client_id},
+                        )
+                        skipped += 1
             else:
                 # skip mode: DO NOTHING on email conflict — still atomic
                 stmt = (
@@ -336,20 +437,26 @@ async def bulk_upsert_leads(
                     .on_conflict_do_nothing()
                     .returning(text("id"))
                 )
-                row = (await db.execute(stmt)).first()
-                if row:
-                    new_lead_ids.append(row[0])
-                    created += 1
-                else:
-                    skipped += 1  # concurrent insert or pre-fetch miss
+                try:
+                    async with db.begin_nested():
+                        row = (await db.execute(stmt)).first()
+                    if row:
+                        new_lead_ids.append(row[0])
+                        created += 1
+                    else:
+                        skipped += 1  # concurrent insert or pre-fetch miss
+                except IntegrityError:
+                    # apollo_id collision in skip mode — treat as skipped
+                    logger.warning(
+                        "bulk_upsert_leads: IntegrityError on skip-mode insert for "
+                        "apollo_id=%s client=%d — counting as skipped",
+                        data.apollo_id,
+                        client_id,
+                        extra={"client_id": client_id},
+                    )
+                    skipped += 1
         elif on_duplicate == "update":
-            for key, value in data.model_dump(exclude_unset=True).items():
-                if key == "enrichment_data" and value is not None:
-                    merged = dict(existing_lead.enrichment_data or {})
-                    merged.update(value)
-                    existing_lead.enrichment_data = merged
-                elif value is not None:
-                    setattr(existing_lead, key, value)
+            _apply_lead_fields(existing_lead, data)
             updated_lead_ids.append(existing_lead.id)
             updated += 1
         else:

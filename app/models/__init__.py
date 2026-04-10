@@ -3,6 +3,7 @@ from app.models.client import Client
 from app.models.company import Company
 from app.models.custom_field import CustomFieldDefinition
 from app.models.lead import EnrichmentLog, Lead, RoutingLog
+from app.models.provider_usage_log import ProviderUsageLog
 from app.models.scoring_rule import ScoringRule
 from app.models.user import ApiKey, User, UserClient
 from app.models.webhook_log import WebhookLog
@@ -14,6 +15,7 @@ __all__ = [
     "CustomFieldDefinition",
     "Lead",
     "EnrichmentLog",
+    "ProviderUsageLog",
     "RoutingLog",
     "ScoringRule",
     "User",

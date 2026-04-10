@@ -183,15 +183,23 @@ async def update_user(
     if body.is_active is not None:
         target.is_active = body.is_active
 
+    if body.new_password is not None:
+        target.hashed_password = hash_password(body.new_password)
+        should_invalidate = True
+
     await db.commit()
     await db.refresh(target)
 
     if should_invalidate:
         await invalidate_user_tokens(db, user_id)
 
+    # Exclude new_password from log to avoid logging sensitive data
+    log_changes = {k: v for k, v in body.model_dump(exclude_none=True).items() if k != "new_password"}
+    if body.new_password is not None:
+        log_changes["new_password"] = "<redacted>"
     logger.info(
         "User updated",
-        extra={"user_id": user_id, "updated_by": current_user.id, "changes": body.model_dump(exclude_none=True)},
+        extra={"user_id": user_id, "updated_by": current_user.id, "changes": log_changes},
     )
     return await _build_user_response(db, target)
 

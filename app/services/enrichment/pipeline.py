@@ -1,5 +1,6 @@
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dynamic_config import dynamic_config
@@ -9,6 +10,7 @@ from app.models.lead import EnrichmentLog, Lead
 from app.services.enrichment import rate_limiter
 from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
 from app.services.enrichment.cache import get_cached, set_cached
+from app.services.provider_usage import record_provider_usage
 from app.services.routing import route_lead
 from app.services.scoring import score_lead
 
@@ -34,9 +36,47 @@ class EnrichmentPipeline:
         self.providers = providers
 
     async def run(self, db: AsyncSession, lead_id: int, client_id: int, retry_count: int = 0) -> None:
-        lead = await db.get(Lead, lead_id)
+        result = await db.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.client_id == client_id)
+        )
+        lead = result.scalar_one_or_none()
         if not lead:
-            logger.warning("Enrichment: lead %d not found", lead_id)
+            # Determine whether this is a genuine not-found or a cross-tenant injection.
+            # Look up by PK only to detect mismatch — but never log the true owner's client_id.
+            other = await db.get(Lead, lead_id)
+            if other is not None:
+                logger.error(
+                    "SECURITY: Enrichment rejected for lead %d — "
+                    "task client_id %d does not match lead owner. "
+                    "Possible cross-tenant task injection.",
+                    lead_id,
+                    client_id,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
+                try:
+                    from app.core.redis import redis
+                    from app.services.dead_letter import DeadLetterService, DeadLetterType
+
+                    dl_svc = DeadLetterService(redis)
+                    await dl_svc.push(
+                        DeadLetterType.ENRICHMENT,
+                        lead_id=lead_id,
+                        client_id=client_id,
+                        error="SECURITY: Lead does not belong to this client — task rejected",
+                    )
+                except Exception as dl_exc:
+                    logger.error(
+                        "Enrichment: failed to write dead letter for security violation "
+                        "on lead %d: %s",
+                        lead_id,
+                        dl_exc,
+                    )
+            else:
+                logger.warning(
+                    "Enrichment: lead %d not found",
+                    lead_id,
+                    extra={"lead_id": lead_id, "client_id": client_id},
+                )
             return
 
         client = await db.get(Client, client_id)
@@ -142,6 +182,7 @@ class EnrichmentPipeline:
 
                     # Provider-level rate limiting (HTTP 429) — log at WARNING, no dead-letter,
                     # treat the same as our internal rate-limiter (deferred, not failed).
+                    # An HTTP call WAS made (we received a 429), so log provider usage.
                     if result.rate_limited:
                         logger.warning(
                             "Enrichment: %s returned HTTP 429 for lead %d — deferring",
@@ -157,6 +198,17 @@ class EnrichmentPipeline:
                             success=False,
                             raw_response={"error": result.error},
                         ))
+                        record_provider_usage(
+                            db,
+                            client_id=client_id,
+                            provider=name,
+                            operation="lead_enrich",
+                            entity_id=str(lead_id),
+                            records_returned=0,
+                            # Credit may or may not have been consumed on a 429; we don't know.
+                            credits_estimated=0,
+                            extra={"skipped_reason": "rate_limited_429"},
+                        )
                         continue
 
                     # Cache successful results (keyed by client_id)
@@ -171,6 +223,17 @@ class EnrichmentPipeline:
                     success=result.success,
                     raw_response=result.raw_response,
                 ))
+                # Only log API usage when an actual provider call was made.
+                # Cache hits do not consume provider credits and must not be counted.
+                if cached is None:
+                    record_provider_usage(
+                        db,
+                        client_id=client_id,
+                        provider=name,
+                        operation="lead_enrich",
+                        entity_id=str(lead_id),
+                        records_returned=1 if (result.success and result.data) else 0,
+                    )
 
                 providers_attempted += 1
 

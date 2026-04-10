@@ -6,9 +6,10 @@ interface LeadsToolbarProps {
   showFilters: boolean;
   onToggleFilters: () => void;
   selectedCount: number;
+  onDeleteSelected?: () => void;
 }
 
-export default function LeadsToolbar({ search, onSearchChange, showFilters, onToggleFilters, selectedCount }: LeadsToolbarProps) {
+export default function LeadsToolbar({ search, onSearchChange, showFilters, onToggleFilters, selectedCount, onDeleteSelected }: LeadsToolbarProps) {
   const [localSearch, setLocalSearch] = useState(search);
 
   useEffect(() => {
@@ -44,7 +45,17 @@ export default function LeadsToolbar({ search, onSearchChange, showFilters, onTo
         Filters
       </button>
       {selectedCount > 0 && (
-        <span className="text-sm text-gray-600">{selectedCount} selected</span>
+        <>
+          <span className="text-sm text-gray-600">{selectedCount} selected</span>
+          {onDeleteSelected && (
+            <button
+              onClick={onDeleteSelected}
+              className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700"
+            >
+              Delete Selected ({selectedCount})
+            </button>
+          )}
+        </>
       )}
     </div>
   );

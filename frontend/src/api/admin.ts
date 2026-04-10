@@ -69,6 +69,18 @@ export async function updateAdminUser(
   return res.json();
 }
 
+export async function resetUserPassword(userId: number, newPassword: string): Promise<void> {
+  const res = await apiFetch(`/admin/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? "Failed to reset password");
+  }
+}
+
 export async function updateUserRole(userId: number, role: string): Promise<AdminUser> {
   const res = await apiFetch(`/admin/users/${userId}/role`, {
     method: "PATCH",

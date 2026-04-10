@@ -1,10 +1,12 @@
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import TokenData, decode_access_token
-from app.models.user import ApiKey, User
+from app.models.client import Client
+from app.models.user import ApiKey, User, UserClient
 from app.services.auth import get_api_key as get_api_key_from_db
 from app.services.auth import get_user_by_id
 
@@ -56,14 +58,48 @@ async def get_current_active_user(
 
 async def get_client_id(
     token_data: TokenData = Depends(get_token_data),
+    db: AsyncSession = Depends(get_db),
 ) -> int:
-    """Read active_client_id directly from the JWT — no DB lookup needed."""
+    """Resolve and validate the JWT's active_client_id.
+
+    Verifies:
+    - client exists and is active (not deactivated)
+    - for admin/member: the user still has an explicit membership row (user_clients)
+    - superadmin: access to any active client without membership check
+    """
     if token_data.active_client_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No active client. Contact your administrator.",
         )
-    return token_data.active_client_id
+
+    client_id = token_data.active_client_id
+
+    client = await db.get(Client, client_id)
+    if client is None or not client.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Client workspace is inactive or no longer exists.",
+        )
+
+    # Superadmin has implicit access to every active client
+    if token_data.role == "superadmin":
+        return client_id
+
+    # Admin/member: verify the user still has an explicit membership row
+    result = await db.execute(
+        select(UserClient).where(
+            UserClient.user_id == token_data.user_id,
+            UserClient.client_id == client_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access to this client workspace has been revoked.",
+        )
+
+    return client_id
 
 
 async def require_admin(
@@ -139,11 +175,20 @@ async def get_api_key_auth(
 
 async def get_client_id_from_api_key(
     api_key: ApiKey = Depends(_get_api_key_obj),
+    db: AsyncSession = Depends(get_db),
 ) -> int:
-    """Resolve client_id from an API key. Used by webhook endpoints."""
+    """Resolve client_id from an API key and verify the client is still active."""
     if api_key.client_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This API key is not linked to a client. Contact your administrator.",
         )
+
+    client = await db.get(Client, api_key.client_id)
+    if client is None or not client.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Client workspace is inactive or no longer exists.",
+        )
+
     return api_key.client_id

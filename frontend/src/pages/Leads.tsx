@@ -7,25 +7,31 @@ import LeadsFilters from "../components/leads/LeadsFilters";
 import LeadsTable from "../components/leads/LeadsTable";
 import LeadSlideOver from "../components/leads/LeadSlideOver";
 import ExportModal from "../components/leads/ExportModal";
+import DeleteConfirmModal from "../components/DeleteConfirmModal";
 import type { LeadFiltersExport } from "../types/lead";
 import { getCustomFieldDefinitions } from "../api/custom_fields";
 import type { CustomFieldDefinition } from "../types/custom_field";
 import { useAuth } from "../contexts/AuthContext";
+import { deleteLead } from "../api/leads";
+import { runBulk, bulkResultToast } from "../utils/bulk";
 
 export default function Leads() {
   const [searchParams] = useSearchParams();
-  const { items, total, loading, limit, offset, sortBy, sortOrder, setFilter, setSort } = useLeads();
-  const { user } = useAuth();
+  const { user, clientVersion } = useAuth();
+  const { items, total, loading, limit, offset, sortBy, sortOrder, setFilter, setSort } = useLeads(clientVersion);
 
   const [showFilters, setShowFilters] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const [customFieldDefs, setCustomFieldDefs] = useState<CustomFieldDefinition[]>([]);
 
   useEffect(() => {
     getCustomFieldDefinitions("lead").then(setCustomFieldDefs).catch(() => {});
-  }, []); // empty deps — fetch once
+  }, [clientVersion]); // re-fetch when workspace changes
 
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
 
@@ -47,6 +53,24 @@ export default function Leads() {
     },
     [setFilter],
   );
+
+  const selectedLeadIds = Object.keys(rowSelection).map(Number);
+
+  const handleDeleteSelected = async () => {
+    setDeleting(true);
+    const { succeeded, failed } = await runBulk(selectedLeadIds, deleteLead);
+    setDeleting(false);
+    setShowDeleteModal(false);
+    setToast(bulkResultToast("deleted", succeeded.length, failed.length));
+    setTimeout(() => setToast(null), 4000);
+    // Keep failed items selected so the user can retry or investigate
+    if (failed.length > 0) {
+      setRowSelection(Object.fromEntries(failed.map((id) => [String(id), true])));
+    } else {
+      setRowSelection({});
+    }
+    setFilter("offset", "0");
+  };
 
   // Build export filters from current URL search params
   const exportFilters: LeadFiltersExport = {
@@ -70,7 +94,8 @@ export default function Leads() {
             onSearchChange={handleSearchChange}
             showFilters={showFilters}
             onToggleFilters={() => setShowFilters((v) => !v)}
-            selectedCount={Object.keys(rowSelection).length}
+            selectedCount={selectedLeadIds.length}
+            onDeleteSelected={selectedLeadIds.length > 0 ? () => setShowDeleteModal(true) : undefined}
           />
         </div>
         <button
@@ -112,6 +137,22 @@ export default function Leads() {
           filters={exportFilters}
           onClose={() => setShowExportModal(false)}
         />
+      )}
+
+      {showDeleteModal && (
+        <DeleteConfirmModal
+          count={selectedLeadIds.length}
+          entityLabel="lead"
+          onConfirm={handleDeleteSelected}
+          onCancel={() => setShowDeleteModal(false)}
+          deleting={deleting}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[60] rounded-md bg-gray-900 px-4 py-3 text-sm text-white shadow-lg">
+          {toast}
+        </div>
       )}
     </div>
   );

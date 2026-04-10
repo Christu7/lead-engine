@@ -3,6 +3,8 @@ import logging
 import signal
 import uuid
 
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.database import async_session
 from app.core.logging_config import configure_logging
@@ -62,7 +64,10 @@ async def process_lead_task(payload: dict) -> None:
                 lead_id,
                 extra={"lead_id": lead_id, "client_id": client_id},
             )
-            lead = await db.get(Lead, lead_id)
+            result = await db.execute(
+                select(Lead).where(Lead.id == lead_id, Lead.client_id == client_id)
+            )
+            lead = result.scalar_one_or_none()
             if lead and lead.enrichment_status != "failed":
                 lead.enrichment_status = "failed"
                 await db.commit()

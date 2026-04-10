@@ -1,11 +1,11 @@
-import { apiFetch } from "./client";
+import { apiFetch, apiError } from "./client";
 import type { ApiKeyEntry, EnrichmentSettings, RoutingSettings } from "../types/settings";
 
 // ── Routing ───────────────────────────────────────────────────────────────────
 
 export async function fetchRoutingSettings(): Promise<RoutingSettings> {
   const res = await apiFetch("/settings/routing");
-  if (!res.ok) throw new Error("Failed to fetch routing settings");
+  if (!res.ok) await apiError(res, "Failed to fetch routing settings");
   return res.json();
 }
 
@@ -15,7 +15,7 @@ export async function updateRoutingSettings(data: RoutingSettings): Promise<Rout
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("Failed to update routing settings");
+  if (!res.ok) await apiError(res, "Failed to update routing settings");
   return res.json();
 }
 
@@ -23,7 +23,7 @@ export async function updateRoutingSettings(data: RoutingSettings): Promise<Rout
 
 export async function fetchEnrichmentSettings(): Promise<EnrichmentSettings> {
   const res = await apiFetch("/settings/enrichment");
-  if (!res.ok) throw new Error("Failed to fetch enrichment settings");
+  if (!res.ok) await apiError(res, "Failed to fetch enrichment settings");
   return res.json();
 }
 
@@ -35,7 +35,7 @@ export async function updateEnrichmentSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error("Failed to update enrichment settings");
+  if (!res.ok) await apiError(res, "Failed to update enrichment settings");
   return res.json();
 }
 
@@ -47,7 +47,7 @@ export interface SetKeyResult extends ApiKeyEntry {
 
 export async function getApiKeys(): Promise<ApiKeyEntry[]> {
   const res = await apiFetch("/settings/keys");
-  if (!res.ok) throw new Error("Failed to fetch API keys");
+  if (!res.ok) await apiError(res, "Failed to fetch API keys");
   return res.json();
 }
 
@@ -57,20 +57,20 @@ export async function setApiKey(keyName: string, value: string): Promise<SetKeyR
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
   });
-  if (!res.ok) throw new Error("Failed to save API key");
+  if (!res.ok) await apiError(res, "Failed to save API key");
   return res.json();
 }
 
 export async function deleteApiKey(keyName: string): Promise<void> {
   const res = await apiFetch(`/settings/keys/${keyName}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete API key");
+  if (!res.ok) await apiError(res, "Failed to delete API key");
 }
 
 export async function verifyApiKey(
   keyName: string
 ): Promise<{ verified: boolean; last_verified_at: string | null }> {
   const res = await apiFetch(`/settings/keys/${keyName}/verify`, { method: "POST" });
-  if (!res.ok) throw new Error("Verification failed");
+  if (!res.ok) await apiError(res, "Verification failed");
   return res.json();
 }
 
@@ -78,7 +78,7 @@ export async function verifyApiKey(
 
 export async function getAiProvider(): Promise<{ provider: string; available: string[] }> {
   const res = await apiFetch("/settings/ai-provider");
-  if (!res.ok) throw new Error("Failed to fetch AI provider");
+  if (!res.ok) await apiError(res, "Failed to fetch AI provider");
   return res.json();
 }
 
@@ -88,9 +88,5 @@ export async function setAiProvider(provider: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider }),
   });
-  if (res.status === 400) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail ?? "Failed to set AI provider");
-  }
-  if (!res.ok) throw new Error("Failed to set AI provider");
+  if (!res.ok) await apiError(res, "Failed to set AI provider");
 }
